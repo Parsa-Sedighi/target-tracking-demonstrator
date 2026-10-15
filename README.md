@@ -87,3 +87,15 @@ This contains code that runs on the external microcontroller or real-time contro
 | `include/` | Header files and declarations used by the controller source code. |
 
 The board and firmware framework are still to be selected. These folders reserve space for that work; they do not require separate Arduino and native firmware implementations.
+
+## Planned Operator Workflow
+
+The operator application is intended to provide a simple interface for monitoring and controlling the target tracking system. The planned workflow is:
+
+1. Launch the operator application and establish a connection to the Jetson.
+2. View the live camera feed and available target detections.
+3. Select a target to begin tracking.
+4. Monitor tracking status and system feedback through the interface.
+5. Stop tracking or select a different target when needed.
+
+This workflow represents the intended software behavior and may be updated as development progresses.
