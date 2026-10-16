@@ -12,6 +12,9 @@ A multidisciplinary embedded vision and control system for real-time target trac
 | [`ui_stack/`](ui_stack/) | Operator PC / laptop | The operator application for viewing video and tracking status, selecting targets, and sending commands. |
 | [`firmware/`](firmware/) | External microcontroller / real-time controller | Motor-control firmware and position feedback for the ECE subsystem. |
 
+## Hardware Used
+HuskyLens2 - https://www.dfrobot.com/huskylens/huskylens2
+
 **Current status:** this repository contains the folder scaffold. Each folder has a `placeholder.txt` file to preserve it in Git. The descriptions below explain the intended responsibilities; ROS 2 packages, the UI, and firmware have not been implemented yet.
 
 ## Folder layout
