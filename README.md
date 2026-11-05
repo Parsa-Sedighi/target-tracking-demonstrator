@@ -17,6 +17,76 @@ HuskyLens2 - https://www.dfrobot.com/huskylens/huskylens2
 
 **Current status:** this repository contains the folder scaffold. Each folder has a `placeholder.txt` file to preserve it in Git. The descriptions below explain the intended responsibilities; ROS 2 packages, the UI, and firmware have not been implemented yet.
 
+## Setting up a Python virtual environment
+
+A virtual environment ("venv") keeps this project's Python packages separate from the rest of your computer, so different projects don't conflict. Each developer should create one locally after cloning the repo.
+
+You need **Python 3.10 or newer**. Check your version with `python3 --version` (macOS/Linux) or `py --version` (Windows). If Python is not installed, download it from [python.org](https://www.python.org/downloads/).
+
+All commands below are run from the root of the repository (the `target-tracking-demonstrator/` folder).
+
+### macOS
+
+```bash
+# Create the environment (only needed once)
+python3 -m venv .venv
+
+# Activate it (needed every time you open a new terminal)
+source .venv/bin/activate
+
+# Upgrade pip
+python -m pip install --upgrade pip
+```
+
+### Linux (Ubuntu / Jetson)
+
+```bash
+# On Ubuntu/Debian, install the venv module first if it is missing
+sudo apt update && sudo apt install python3-venv
+
+# Create the environment (only needed once)
+python3 -m venv .venv
+
+# Activate it (needed every time you open a new terminal)
+source .venv/bin/activate
+
+# Upgrade pip
+python -m pip install --upgrade pip
+```
+
+> **ROS 2 note:** On the Jetson, ROS 2 Python packages (such as `rclpy`) are installed system-wide by ROS, not through pip. If you use a venv alongside ROS 2, create it with `python3 -m venv --system-site-packages .venv` so those packages remain visible, and source ROS (`source /opt/ros/<distro>/setup.bash`) before activating the venv.
+
+### Windows
+
+In **PowerShell**:
+
+```powershell
+# Create the environment (only needed once)
+py -m venv .venv
+
+# Activate it (needed every time you open a new terminal)
+.venv\Scripts\Activate.ps1
+
+# Upgrade pip
+python -m pip install --upgrade pip
+```
+
+If PowerShell says running scripts is disabled, run this once and then try activating again:
+
+```powershell
+Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned
+```
+
+In **Command Prompt (cmd.exe)**, activate with `.venv\Scripts\activate.bat` instead.
+
+### Using the environment
+
+- When the venv is active, your terminal prompt starts with `(.venv)`. Any `pip install` now installs into this project only.
+- Once a `requirements.txt` is added to the project, install dependencies with `pip install -r requirements.txt`.
+- To leave the environment, run `deactivate`.
+- Don't commit the `.venv/` folder — it is specific to your machine. Add `.venv/` to `.gitignore`.
+- In VS Code, open the Command Palette and choose **Python: Select Interpreter**, then pick the interpreter inside `.venv`.
+
 ## Folder layout
 
 ```text
