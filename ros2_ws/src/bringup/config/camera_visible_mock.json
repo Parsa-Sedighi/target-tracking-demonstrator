@@ -1,0 +1,6 @@
+{
+  "backend": "mock",
+  "device": 0,
+  "spectrum": "visible",
+  "pixel_format": "bgr8"
+}
