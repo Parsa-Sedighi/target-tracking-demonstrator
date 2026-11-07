@@ -1,39 +1,41 @@
 """RF-DETR Nano drone detector: dataset checks, training, and inference.
 
-This module is the skeleton for the project's drone detector. It is usable before
-real data exists: ``make-dummy-data`` generates a small synthetic dataset so the
-full train -> checkpoint -> predict pipeline can be smoke-tested end to end.
+The default dataset is the visible-light part of the UAV release
+(``uav_dataset/uav_dataset_release/visible``, one class: ``0 = drone``).
 
-Install (inside the project venv):
+Install (inside the project venv). The RTX 50-series needs a CUDA 12.8+ PyTorch build:
+    pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
     pip install "rfdetr[train]==1.11.2"
 
-Command line (run from the repo root):
-    # 1. Generate a throwaway synthetic dataset (until real data is available)
-    python ros2_ws/src/perception_stack/detection_tracking/rf_detr.py make-dummy-data
+Command line (run from the repo root; S = ros2_ws/src/perception_stack/detection_tracking/rf_detr.py):
+    # 1. Verify the dataset (counts images, boxes, negatives; checks every label line)
+    python S check-data
 
-    # 2. Verify a dataset folder has the layout RF-DETR expects
-    python ros2_ws/src/perception_stack/detection_tracking/rf_detr.py check-data datasets/drones
+    # 2. Optional: build a small hard-linked subset and do a quick smoke-test run first
+    python S make-subset --train 2000 --val 400 --test 400
+    python S train datasets/uav_subset --epochs 2
 
-    # 3. Train
-    python ros2_ws/src/perception_stack/detection_tracking/rf_detr.py train datasets/drones --epochs 50
+    # 3. Full training run
+    python S train --epochs 20
 
     # 4. Run the trained model on an image
-    python ros2_ws/src/perception_stack/detection_tracking/rf_detr.py predict \
-        runs/rfdetr_nano/checkpoint_best_total.pth some_image.jpg
+    python S predict runs/rfdetr_nano/checkpoint_best_total.pth some_image.jpg
 
-Expected dataset layout (COCO, the default Roboflow export format):
-    datasets/drones/
-        train/  _annotations.coco.json  + images
-        valid/  _annotations.coco.json  + images
-        test/   _annotations.coco.json  + images
-A YOLO-format export (``data.yaml`` + images/labels folders) is also accepted.
+Supported dataset layouts:
+    YOLO (Ultralytics or Roboflow style): a ``data.yaml`` whose ``train``/``val``/``test`` entries
+        point at image folders (e.g. ``images/train``); labels sit in the matching ``labels/``
+        folder. Empty label files are negatives (images with no drone).
+    COCO (Roboflow export): ``train/``, ``valid/``, ``test/``, each with ``_annotations.coco.json``.
+``make-dummy-data`` still generates a tiny synthetic COCO dataset for pipeline testing.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import random
+import shutil
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -42,11 +44,16 @@ from typing import Any
 import numpy as np
 
 # Paths are relative to the directory you run the script from (the repo root).
-DEFAULT_DATASET_DIR = Path("datasets/drones")
+DEFAULT_DATASET_DIR = Path("uav_dataset/uav_dataset_release/visible")
+DEFAULT_SUBSET_DIR = Path("datasets/uav_subset")
 DEFAULT_DUMMY_DIR = Path("datasets/dummy_drones")
 DEFAULT_OUTPUT_DIR = Path("runs/rfdetr_nano")
 COCO_SPLITS = ("train", "valid", "test")
 COCO_ANNOTATION_FILE = "_annotations.coco.json"
+YOLO_SPLITS = ("train", "val", "test")
+YOLO_YAML_FILES = ("data.yaml", "data.yml")
+# Same extension set RF-DETR's YOLO loader accepts.
+YOLO_IMAGE_EXTENSIONS = {".bmp", ".dng", ".jpg", ".jpeg", ".mpo", ".png", ".tif", ".tiff", ".webp"}
 
 
 # ---------------------------------------------------------------------------
@@ -68,8 +75,12 @@ def pick_device(requested: str | None = None) -> str:
 # ---------------------------------------------------------------------------
 # Dataset helpers
 # ---------------------------------------------------------------------------
-def check_dataset(dataset_dir: Path) -> dict[str, Any]:
+def check_dataset(dataset_dir: Path, scan_labels: bool = True) -> dict[str, Any]:
     """Validate the dataset layout and return a short summary.
+
+    ``summary["dataset_file"]`` is the value RF-DETR's ``train(dataset_file=...)`` needs.
+    ``scan_labels=False`` skips reading every YOLO label file (only folder structure and
+    file counts are checked), which is much faster on a large dataset.
 
     Raises FileNotFoundError / ValueError with a readable message if the layout is wrong,
     so problems surface before a long training run starts rather than partway through.
@@ -78,11 +89,11 @@ def check_dataset(dataset_dir: Path) -> dict[str, Any]:
     if not dataset_dir.is_dir():
         raise FileNotFoundError(f"Dataset folder not found: {dataset_dir}")
 
-    yolo_yaml = next((p for p in (dataset_dir / "data.yaml", dataset_dir / "data.yml") if p.exists()), None)
+    yolo_yaml = next((dataset_dir / n for n in YOLO_YAML_FILES if (dataset_dir / n).exists()), None)
     if yolo_yaml and not (dataset_dir / "train" / COCO_ANNOTATION_FILE).exists():
-        return {"format": "yolo", "data_file": str(yolo_yaml)}
+        return _check_yolo_dataset(dataset_dir, yolo_yaml, scan_labels)
 
-    summary: dict[str, Any] = {"format": "coco", "splits": {}}
+    summary: dict[str, Any] = {"format": "coco", "dataset_file": "roboflow", "splits": {}}
     class_names: list[str] | None = None
     for split in COCO_SPLITS:
         ann_path = dataset_dir / split / COCO_ANNOTATION_FILE
@@ -103,6 +114,226 @@ def check_dataset(dataset_dir: Path) -> dict[str, Any]:
         summary["splits"][split] = {"images": len(images), "boxes": len(annotations)}
     summary["classes"] = class_names
     return summary
+
+
+def _is_within(path: Path, root: Path) -> bool:
+    try:
+        path.resolve().relative_to(root.resolve())
+        return True
+    except ValueError:
+        return False
+
+
+def _load_yolo_yaml(yaml_path: Path) -> tuple[dict[str, Any], list[str]]:
+    """Read data.yaml and return (raw mapping, class names as a 0..N-1 list)."""
+    import yaml  # PyYAML ships with rfdetr's dependencies
+
+    data = yaml.safe_load(yaml_path.read_text(encoding="utf-8")) or {}
+    names = data.get("names")
+    if isinstance(names, dict):
+        ids = sorted(int(k) for k in names)
+        if ids != list(range(len(ids))):
+            raise ValueError(f"{yaml_path}: class ids must be contiguous 0..N-1, got {ids}")
+        class_names = [str(names[k] if k in names else names[str(k)]) for k in ids]
+    elif isinstance(names, list):
+        class_names = [str(n) for n in names]
+    else:
+        raise ValueError(f"{yaml_path}: missing or invalid 'names' entry")
+    if not class_names:
+        raise ValueError(f"{yaml_path}: 'names' is empty")
+    return data, class_names
+
+
+def _yolo_split_dirs(root: Path, data: dict[str, Any], yaml_path: Path, split: str) -> tuple[Path, Path] | None:
+    """Return (images_dir, labels_dir) for a split, resolved the same way RF-DETR does.
+
+    Paths declared in data.yaml win (Ultralytics layout: ``val: images/val``); otherwise the
+    Roboflow layout ``<split>/images`` is used. Returns None if the split is not present.
+    """
+    raw = data.get(split)
+    if raw is None and split == "val":
+        raw = data.get("valid")
+
+    if raw is None:
+        folder = root / ("valid" if split == "val" else split)
+        if split == "val" and not folder.exists():
+            folder = root / "val"
+        images, labels = folder / "images", folder / "labels"
+        return (images, labels) if images.is_dir() else None
+
+    if not isinstance(raw, str):
+        raise ValueError(f"{yaml_path}: '{split}' must be a single folder path, got {raw!r}")
+
+    base = root
+    declared_base = data.get("path")
+    if declared_base:
+        base = Path(declared_base) if Path(declared_base).is_absolute() else root / declared_base
+        if not _is_within(base, root):
+            # RF-DETR silently ignores declared paths outside the dataset root, then fails to
+            # find the Roboflow fallback folders, so flag it clearly here.
+            raise ValueError(
+                f"{yaml_path}: 'path: {declared_base}' points outside the dataset folder. "
+                "Delete the 'path:' line so split paths are read relative to data.yaml."
+            )
+
+    images = base / raw
+    if not _is_within(images, root):
+        raise ValueError(f"{yaml_path}: '{split}: {raw}' resolves outside the dataset folder")
+    parts = images.parts
+    if "images" in parts:
+        idx = len(parts) - 1 - parts[::-1].index("images")  # rightmost 'images' segment
+        labels = Path(*parts[:idx], "labels", *parts[idx + 1 :])
+    else:
+        images, labels = images / "images", images / "labels"
+    return images, labels
+
+
+def _list_images(folder: Path) -> list[str]:
+    with os.scandir(folder) as it:
+        return sorted(
+            e.name for e in it if e.is_file() and os.path.splitext(e.name)[1].lower() in YOLO_IMAGE_EXTENSIONS
+        )
+
+
+def _scan_yolo_label(label_path: Path, num_classes: int) -> tuple[int, list[str]]:
+    """Return (box count, list of problems) for one YOLO label file."""
+    boxes, problems = 0, []
+    for line_no, line in enumerate(label_path.read_text(encoding="utf-8").splitlines(), 1):
+        line = line.strip()
+        if not line:
+            continue
+        fields = line.split()
+        where = f"{label_path.name}:{line_no}"
+        if len(fields) != 5:
+            problems.append(f"{where}: expected 5 values, got {len(fields)}")
+            continue
+        try:
+            cls_id = int(fields[0])
+            xc, yc, w, h = (float(v) for v in fields[1:])
+        except ValueError:
+            problems.append(f"{where}: non-numeric value")
+            continue
+        if not 0 <= cls_id < num_classes:
+            problems.append(f"{where}: class id {cls_id} not in 0..{num_classes - 1}")
+        elif not (w > 0 and h > 0):
+            problems.append(f"{where}: zero or negative box size")
+        elif not all(-1e-3 <= v <= 1 + 1e-3 for v in (xc, yc, w, h)):
+            problems.append(f"{where}: coordinates not normalized to [0, 1]")
+        else:
+            boxes += 1
+    return boxes, problems
+
+
+def _check_yolo_dataset(root: Path, yaml_path: Path, scan_labels: bool) -> dict[str, Any]:
+    data, class_names = _load_yolo_yaml(yaml_path)
+    summary: dict[str, Any] = {
+        "format": "yolo",
+        "dataset_file": "yolo",
+        "data_file": str(yaml_path),
+        "classes": class_names,
+        "splits": {},
+    }
+    problems: list[str] = []
+    for split in YOLO_SPLITS:
+        dirs = _yolo_split_dirs(root, data, yaml_path, split)
+        if dirs is None or not dirs[0].is_dir():
+            if split == "test":
+                continue  # RF-DETR treats the test split as optional
+            raise FileNotFoundError(f"{split} images folder not found for {yaml_path}")
+        images_dir, labels_dir = dirs
+        if not labels_dir.is_dir():
+            raise FileNotFoundError(f"Labels folder not found: {labels_dir}")
+
+        images = _list_images(images_dir)
+        if not images:
+            raise ValueError(f"No images found in {images_dir}")
+        label_names = {e.name for e in os.scandir(labels_dir) if e.name.endswith(".txt")}
+        stems = [os.path.splitext(name)[0] for name in images]
+        unlabeled = sum(1 for s in stems if f"{s}.txt" not in label_names)
+        orphan_labels = len(label_names - {f"{s}.txt" for s in stems})
+
+        stats: dict[str, Any] = {"images": len(images), "unlabeled_images": unlabeled}
+        if orphan_labels:
+            stats["labels_without_image"] = orphan_labels
+        if scan_labels:
+            boxes = negatives = 0
+            for s in stems:
+                label_path = labels_dir / f"{s}.txt"
+                if not label_path.exists():
+                    continue
+                n, bad = _scan_yolo_label(label_path, len(class_names))
+                boxes += n
+                negatives += n == 0 and not bad
+                problems.extend(f"{split}/{p}" for p in bad)
+            stats.update(boxes=boxes, negative_images=negatives)
+        summary["splits"][split] = stats
+
+    if problems:
+        shown = "\n  ".join(problems[:10])
+        raise ValueError(f"{len(problems)} bad label line(s), e.g.:\n  {shown}")
+    return summary
+
+
+def make_subset(
+    src_dir: Path = DEFAULT_DATASET_DIR,
+    out_dir: Path = DEFAULT_SUBSET_DIR,
+    counts: tuple[int, int, int] = (2000, 400, 400),
+    seed: int = 0,
+    overwrite: bool = False,
+) -> Path:
+    """Create a small random YOLO subset of a YOLO dataset for quick test runs.
+
+    Files are hard-linked (no extra disk space) when source and destination are on the same
+    drive, and copied otherwise. The output uses the Ultralytics layout with its own data.yaml.
+    """
+    import yaml
+
+    src_dir, out_dir = Path(src_dir), Path(out_dir)
+    yaml_path = next((src_dir / n for n in YOLO_YAML_FILES if (src_dir / n).exists()), None)
+    if yaml_path is None:
+        raise FileNotFoundError(f"No data.yaml in {src_dir}; make-subset only supports YOLO datasets")
+    data, class_names = _load_yolo_yaml(yaml_path)
+
+    if out_dir.exists() and any(out_dir.iterdir()):
+        if not overwrite:
+            raise FileExistsError(f"{out_dir} is not empty (use --overwrite to replace it)")
+        if not (out_dir / "data.yaml").exists():
+            raise FileExistsError(f"Refusing to delete {out_dir}: it does not look like a subset folder")
+        shutil.rmtree(out_dir)
+
+    rng = random.Random(seed)
+    for split, count in zip(YOLO_SPLITS, counts):
+        dirs = _yolo_split_dirs(src_dir, data, yaml_path, split)
+        if dirs is None or not dirs[0].is_dir():
+            continue
+        images = _list_images(dirs[0])
+        picked = rng.sample(images, min(count, len(images)))
+        img_out, lbl_out = out_dir / "images" / split, out_dir / "labels" / split
+        img_out.mkdir(parents=True, exist_ok=True)
+        lbl_out.mkdir(parents=True, exist_ok=True)
+        for name in picked:
+            _link_or_copy(dirs[0] / name, img_out / name)
+            label = dirs[1] / f"{os.path.splitext(name)[0]}.txt"
+            if label.exists():
+                _link_or_copy(label, lbl_out / label.name)
+
+    subset_yaml = {
+        "train": "images/train",
+        "val": "images/val",
+        "test": "images/test",
+        "names": dict(enumerate(class_names)),
+    }
+    if not (out_dir / "images" / "test").is_dir():
+        del subset_yaml["test"]
+    (out_dir / "data.yaml").write_text(yaml.safe_dump(subset_yaml, sort_keys=False), encoding="utf-8")
+    return out_dir
+
+
+def _link_or_copy(src: Path, dst: Path) -> None:
+    try:
+        os.link(src, dst)
+    except OSError:
+        shutil.copy2(src, dst)
 
 
 def make_dummy_dataset(
@@ -184,18 +415,25 @@ def _draw_quadcopter(draw: Any, x0: int, y0: int, size: int, shade: int) -> None
 # ---------------------------------------------------------------------------
 @dataclass
 class TrainSettings:
-    """Training hyperparameters. Defaults are sized for a laptop / single small GPU."""
+    """Training hyperparameters. Defaults are sized for a single 8 GB GPU (e.g. RTX 5060).
+
+    The full visible set is ~63k training images, so one epoch is already ~15k steps at
+    batch size 4: a 20-epoch cap with early stopping is plenty for a Nano fine-tune.
+    """
 
     dataset_dir: Path = DEFAULT_DATASET_DIR
     output_dir: Path = DEFAULT_OUTPUT_DIR
-    epochs: int = 50
+    epochs: int = 20
     batch_size: int = 4
     grad_accum_steps: int = 4  # effective batch = batch_size * grad_accum_steps = 16
     lr: float = 1e-4
     resolution: int | None = None  # None = Nano default (384); must be divisible by 32
     device: str | None = None  # None = auto (cuda > mps > cpu)
-    num_workers: int = 2
+    num_workers: int = 4
     early_stopping: bool = True
+    early_stopping_patience: int = 5  # epochs without mAP improvement before stopping
+    checkpoint_interval: int = 1  # save a resumable checkpoint every N epochs
+    run_test: bool = True  # evaluate on the test split once training ends
     resume: Path | None = None  # path to a checkpoint to continue from
 
 
@@ -203,15 +441,20 @@ def train(settings: TrainSettings) -> Path:
     """Fine-tune RF-DETR Nano (COCO-pretrained) on the drone dataset. Returns the output folder."""
     from rfdetr import RFDETRNano
 
+    # Full check (~10 s on the 90k-image set) so a bad label fails now, not hours into training.
     summary = check_dataset(settings.dataset_dir)
-    print(f"[rf_detr] dataset OK: {summary}")
+    print(f"[rf_detr] dataset OK: {json.dumps(summary)}")
 
     device = pick_device(settings.device)
     print(f"[rf_detr] training on device: {device}")
+    if device == "cpu":
+        print("[rf_detr] WARNING: no GPU found; training on CPU will be extremely slow.")
 
     model = RFDETRNano()  # downloads the pretrained rf-detr-nano.pth on first use (~100 MB)
     kwargs: dict[str, Any] = dict(
         dataset_dir=str(settings.dataset_dir),
+        # RF-DETR does not auto-detect the layout: "yolo" for data.yaml datasets, "roboflow" for COCO.
+        dataset_file=summary["dataset_file"],
         output_dir=str(settings.output_dir),
         epochs=settings.epochs,
         batch_size=settings.batch_size,
@@ -220,6 +463,9 @@ def train(settings: TrainSettings) -> Path:
         device=device,
         num_workers=settings.num_workers,
         early_stopping=settings.early_stopping,
+        early_stopping_patience=settings.early_stopping_patience,
+        checkpoint_interval=settings.checkpoint_interval,
+        run_test=settings.run_test and "test" in summary.get("splits", {}),
     )
     if settings.resolution:
         kwargs["resolution"] = settings.resolution
@@ -241,6 +487,7 @@ class DroneDetector:
     ``detect_targets`` returns the same dict format as ``yolo_classifier.TargetClassifier``
     so the two detectors are interchangeable in the perception pipeline:
         {'class': str, 'bbox': (x, y, w, h), 'confidence': float}
+    ``detect`` is the same call under the name the operator UI (ui_stack) expects.
     """
 
     def __init__(
@@ -252,14 +499,26 @@ class DroneDetector:
         from rfdetr import RFDETR
 
         self.conf_thresh = confidence_threshold
+        self.checkpoint_path = Path(checkpoint_path)
         # trust_checkpoint=True: we load our own locally trained file, not an untrusted download.
         self.model = RFDETR.from_checkpoint(str(checkpoint_path), trust_checkpoint=True)
         self.class_names: list[str] = list(getattr(self.model, "class_names", None) or [])
         if optimize:
-            try:
+            self._optimize()
+
+    def _optimize(self) -> None:
+        """Compile the model for faster per-frame inference (optional; predict works without it)."""
+        try:
+            if hasattr(self.model, "inference"):  # rfdetr >= 1.7
+                self.model.inference()
+            else:  # older rfdetr releases
                 self.model.optimize_for_inference()
-            except Exception as exc:  # optional speed-up; plain predict still works without it
-                print(f"[rf_detr] optimize_for_inference skipped: {exc}")
+        except Exception as exc:
+            print(f"[rf_detr] inference optimization skipped: {exc}")
+
+    def detect(self, frame: np.ndarray) -> list[dict[str, Any]]:
+        """Detect drones in one BGR (OpenCV) frame; the interface used by the operator UI."""
+        return self.detect_targets(frame, bgr=True)
 
     def detect_targets(self, frame: np.ndarray, bgr: bool = True) -> list[dict[str, Any]]:
         """Detect drones in one frame. OpenCV frames are BGR, so they are flipped to RGB first."""
@@ -296,6 +555,16 @@ def _build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("check-data", help="validate a dataset folder")
     p.add_argument("dataset_dir", type=Path, nargs="?", default=DEFAULT_DATASET_DIR)
+    p.add_argument("--quick", action="store_true", help="only check folders and file counts, skip label scan")
+
+    p = sub.add_parser("make-subset", help="hard-link a small random YOLO subset for quick test runs")
+    p.add_argument("dataset_dir", type=Path, nargs="?", default=DEFAULT_DATASET_DIR)
+    p.add_argument("--out", type=Path, default=DEFAULT_SUBSET_DIR)
+    p.add_argument("--train", type=int, default=2000)
+    p.add_argument("--val", type=int, default=400)
+    p.add_argument("--test", type=int, default=400)
+    p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--overwrite", action="store_true", help="replace an existing subset folder")
 
     p = sub.add_parser("train", help="fine-tune RF-DETR Nano")
     p.add_argument("dataset_dir", type=Path, nargs="?", default=DEFAULT_DATASET_DIR)
@@ -308,6 +577,9 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--device", default=None, help="cuda | mps | cpu (default: auto)")
     p.add_argument("--num-workers", type=int, default=TrainSettings.num_workers)
     p.add_argument("--no-early-stopping", action="store_true")
+    p.add_argument("--patience", type=int, default=TrainSettings.early_stopping_patience)
+    p.add_argument("--checkpoint-interval", type=int, default=TrainSettings.checkpoint_interval)
+    p.add_argument("--no-test", action="store_true", help="skip the final test-split evaluation")
     p.add_argument("--resume", type=Path, default=None)
 
     p = sub.add_parser("predict", help="run a checkpoint on an image and print detections")
@@ -326,7 +598,14 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(check_dataset(out), indent=2))
 
     elif args.command == "check-data":
-        print(json.dumps(check_dataset(args.dataset_dir), indent=2))
+        print(json.dumps(check_dataset(args.dataset_dir, scan_labels=not args.quick), indent=2))
+
+    elif args.command == "make-subset":
+        out = make_subset(
+            args.dataset_dir, args.out, (args.train, args.val, args.test), args.seed, args.overwrite
+        )
+        print(f"[rf_detr] wrote subset to {out}")
+        print(json.dumps(check_dataset(out), indent=2))
 
     elif args.command == "train":
         train(
@@ -341,6 +620,9 @@ def main(argv: list[str] | None = None) -> int:
                 device=args.device,
                 num_workers=args.num_workers,
                 early_stopping=not args.no_early_stopping,
+                early_stopping_patience=args.patience,
+                checkpoint_interval=args.checkpoint_interval,
+                run_test=not args.no_test,
                 resume=args.resume,
             )
         )

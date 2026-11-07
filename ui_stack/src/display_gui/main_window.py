@@ -64,10 +64,14 @@ class VideoLabel(QLabel):
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, detector=None):
+    def __init__(self, detector=None, detector_name=None):
         super().__init__()
         self.setWindowTitle("Target Tracking Demonstrator - Operator UI")
-        self.detector = detector or DemoDetector()
+        # The real model (e.g. RF-DETR) runs on webcam / video frames. The Demo source has
+        # no real drones in it, so it always uses the fake DemoDetector.
+        self.model_detector = detector
+        self.model_name = detector_name or ("Model" if detector else None)
+        self.demo_detector = DemoDetector()
         self.renderer = HUDOverlayRenderer()
 
         self.capture = None          # cv2.VideoCapture, or None while on Demo
@@ -130,6 +134,11 @@ class MainWindow(QMainWindow):
         panel.addLayout(buttons)
         panel.addWidget(target_group)
         panel.addWidget(det_group, 1)
+        self.detector_label = QLabel()
+        self.detector_label.setWordWrap(True)
+        self.detector_label.setStyleSheet("font-family: Menlo, Consolas, monospace;")
+        panel.addWidget(self.detector_label)
+        self._show_detector()
         self.fps_label = QLabel("FPS: --")
         self.fps_label.setStyleSheet("font-family: Menlo, Consolas, monospace;")
         panel.addWidget(self.fps_label)
@@ -202,8 +211,23 @@ class MainWindow(QMainWindow):
         self.frame_times.clear()
         self.tracks = {}
         self._clear_target()
+        self._show_detector()
         self.statusBar().showMessage(f"Source: {name}")
         return True
+
+    def _active_detector(self):
+        if self.capture is None or self.model_detector is None:
+            return self.demo_detector
+        return self.model_detector
+
+    def _show_detector(self):
+        if self._active_detector() is self.demo_detector:
+            text = "Detector: Demo (fake)"
+            if self.model_detector is not None:
+                text += f"\n{self.model_name} loaded - pick Webcam or a video file to use it"
+        else:
+            text = f"Detector: {self.model_name}"
+        self.detector_label.setText(text)
 
     def _revert_source_box(self):
         self.source_box.blockSignals(True)
@@ -225,7 +249,7 @@ class MainWindow(QMainWindow):
         if frame is None:
             return
         self._update_fps()
-        detections = self._add_ids(self.detector.detect(frame), frame.shape[1])
+        detections = self._add_ids(self._active_detector().detect(frame), frame.shape[1])
         self.last_dets = detections
         matched = self._update_target(detections, frame.shape[1])
         self._update_state(matched)
@@ -401,9 +425,9 @@ class MainWindow(QMainWindow):
         super().closeEvent(event)
 
 
-def main():
+def main(detector=None, detector_name=None):
     app = QApplication(sys.argv)
-    window = MainWindow()
+    window = MainWindow(detector, detector_name)
     window.resize(1240, 720)
     window.show()
     sys.exit(app.exec())

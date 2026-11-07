@@ -1,2 +1,5 @@
 PySide6
 opencv-python-headless
+# To run the trained RF-DETR model in the UI (not needed with --demo):
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
+#   pip install "rfdetr[train]==1.11.2"

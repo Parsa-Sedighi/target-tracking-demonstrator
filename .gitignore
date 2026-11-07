@@ -1,1 +1,14 @@
 .venv/
+
+# Datasets and archives (too large for git)
+uav_dataset/
+uav_dataset_release/
+datasets/
+*.zip
+
+# Training outputs
+runs/
+
+# Python bytecode
+__pycache__/
+*.pyc
