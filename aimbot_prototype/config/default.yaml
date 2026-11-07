@@ -1,0 +1,180 @@
+# =============================================================================
+# AimBot - default configuration = full closed-loop SIMULATION (runs on any PC)
+#
+# Other configs "extends:" this file and only list what changes:
+#   webcam.yaml            real camera + YOLO on your PC, no gimbal (dry run)
+#   jetson_hw.yaml         Jetson + FLIR Blackfly S + Gremsy Mio (MAVLink) + TF02-Pro
+#   jetson_esp32.yaml      same, with the gimbal/LiDAR behind the ESP32-S3 PCB
+#   jetson_headless.yaml   jetson_hw + operator gateway, GUI runs on the laptop
+#
+# Command-line overrides:  python -m aimbot --set sim.scenario=ball_drop --set control.mode=rate
+# Units: degrees / metres / milliseconds in this file (converted internally).
+# =============================================================================
+
+sim:
+  scenario: mixed            # mixed | drone_lateral | ball_drop | card_walk | crossing | occlusion
+  seed: 7
+  noise_sigma: 3.0           # image noise (grey levels)
+  card_text: "AIM 23"        # text printed on the simulated index card (OCR demo)
+
+# Named image sources (FR-10). Exactly one is active; the GUI can hot-swap them.
+sensors:
+  vis:
+    backend: sim             # sim | opencv | spinnaker
+    width: 968               # Blackfly S 1936x1464 with 2x2 binning (keeps the sim fast)
+    height: 732
+    fps: 60
+    latency_ms: 8            # exposure + USB transfer delay before the frame is delivered
+    intrinsics:
+      focal_mm: 8.0          # Kowa LM8JC
+      pixel_um: 9.0          # IMX421 4.5 um pixel x 2 (binning)
+camera:
+  active: vis
+
+gimbal:
+  backend: sim               # sim | none | gremsy (MAVLink, direct/FT232) | esp32 (via supervisory PCB)
+  max_rate_dps: 100          # Gremsy Mio max controlled rotation speed
+  feedback_hz: 100
+  limits_deg: {pan_min: -170, pan_max: 170, tilt_min: -45, tilt_max: 90}   # ES-04.2 tilt range
+  invert_pan: false
+  invert_tilt: false
+  # simulator dynamics
+  sim_max_acc_dps2: 900
+  sim_pos_gain: 25           # 1/s - the gimbal's own angle loop
+  sim_cmd_latency_ms: 6      # serial command transport
+  sim_fb_latency_ms: 5       # encoder feedback transport
+  sim_encoder_noise_deg: 0.005
+
+lidar:
+  backend: sim               # sim | serial | esp32 | none
+  rate_hz: 100
+  beam_deg: 3.0              # TF02-Pro detection angle
+  noise_cm: 1.5
+  bias_cm: 2.5               # sim only: deliberate bias so the calibration routine has something to fix
+  corrupt_prob: 0.01         # sim only: fraction of frames corrupted to exercise checksum rejection
+
+detector:
+  backend: sim_truth         # yolo | color | sim_truth (simulator ground truth + noise, no model needed)
+  enabled: true
+  max_hz: 30                 # macro loop rate cap (PRD: 15-30 Hz)
+  # YOLO26 (backend: yolo). models/aimbot_yolo26n.pt is YOLO26n trained on the team's drone datasets
+  # (tools/train_yolo26.py, docs/TRAINING.md): drone + the non-targets bird, airplane, helicopter.
+  model: models/aimbot_yolo26n.pt   # .pt | TensorRT .engine (build on the Jetson) | .onnx
+  fallback_model: [yolo26n.pt]      # tried in order if the model file is missing; yolo26n.pt = stock COCO
+                                    # (auto-download, ~5 MB; no drone class, so airplane/bird/kite count as drone)
+  assist_model: [yolo26n.pt]        # COCO model that adds classes the main model lacks ("" = off)
+  assist_classes: ["sports ball"]   # COCO names to take from it, e.g. + "person"; only the model that
+                                    # can see the locked class runs on the tracking ROI
+  coco_drone_proxies: true          # COCO-only models: report airplane/bird/kite as drone
+  imgsz: 640
+  roi_imgsz: 320
+  conf: 0.25
+  iou: 0.5                   # YOLO26 is NMS-free end to end; iou only matters for older models
+  device: auto               # auto | cpu | 0
+  half: true                 # FP16 on CUDA
+  roi_when_tracking: true    # while tracking, run YOLO on a native-resolution crop around the target
+  full_frame_every: 5        # ...but every Nth run is full frame (keeps other targets visible)
+  roi_min_px: 320
+  # sim_truth only
+  latency_ms: 15
+  noise_px: 1.5
+  miss_prob: 0.03
+  false_positive_prob: 0.02
+  color: {hsv_lo: [25, 90, 90], hsv_hi: [45, 255, 255], class_name: "sports ball"}
+  class_map: {}              # extra detector-name -> logical-class mappings, e.g. {"my_drone": drone}
+
+association: {iou_min: 0.05, center_gate: 1.5, max_misses: 6, min_conf: 0.2}
+
+seek:                        # FR-02 autonomous target seeking / TR-8 priority list
+  target_class: auto         # auto (use priority) | any | drone | ball | card | hand | person | phone
+  priority: [drone, ball, card]
+  min_conf: 0.5
+  min_hits: 2                # detections needed before a track can be locked
+  prefer: center             # center | confidence | size
+  ui_classes: [auto, any, drone, ball, card, hand, person, phone]
+
+micro:                       # frame-rate tracker between detections
+  backend: template          # template | csrt | kcf | mil  (csrt/kcf need opencv-contrib-python)
+  max_template_px: 40
+  search_factor: 2.2
+  min_score: 0.45
+  update_alpha: 0.05
+  max_miss_s: 0.12           # no good tracker update (or detector re-seed) for this long -> target lost
+  confirm_timeout_s: 1.0     # classified lock with no detector confirmation -> lost (0 = never)
+  template_frac: 0.6         # template = central part of the box (less background)
+  recover_gate: 3.0          # detector re-seeds a drifting tracker if within N box sizes of the prediction
+  reseed_offset_frac: 0.08   # re-anchor to a detection when the tracker is off by > 8 % of the box
+  refresh_score: 0.65        # ...or when its match score has decayed (background changed behind the target)
+  motion_penalty: 0.12       # prefer matches near the Kalman prediction (suppresses jumps to clutter)
+  motion_sigma_px: 5.0
+
+kalman:                      # TR-3: predict between frames, compensate latency
+  model: cv                  # cv (constant velocity) | ca (constant acceleration)
+  q: 2.0                     # process noise (rad^2/s^3): lower = smoother, higher = follows manoeuvres faster
+  meas_sigma_px: 3.0         # measurement noise of the tracker centroid
+  gate_chi2: 13.8
+  max_predict_s: 0.6
+
+control:
+  source: internal           # internal reference controller | external (ECE node via ROS 2)
+  rate_hz: 100               # PRD: 100 Hz heartbeat / control
+  mode: angle                # angle (fail-safe: gimbal holds if commands stop) | rate (PID + feed-forward)
+  lead_ms: 45                # angle mode: transport + gimbal position-loop lag
+  kp: 6.0                    # rate mode gains
+  ki: 0.5
+  ff_gain: 1.0
+  max_rate_dps: 100
+  max_acc_dps2: 900
+
+search:
+  reacquire_window_s: 5.0    # ES-03.1 hold and search for 5 s
+  coast_s: 0.4               # keep following the prediction this long after a loss, then hold
+  coast_max_deg: 6.0         # ...but never further than this from where the target was last seen
+  near_gate_s: 1.5           # during re-acquisition prefer detections near the predicted position
+  on_lost: hold              # hold | home   (after the window expires: ES-03.2 = hold + alert)
+
+safety:
+  gimbal_timeout_s: 0.5      # ES-11.3: feedback lost > 0.5 s -> FAULT, motion stops
+  home_on_shutdown: true
+
+vision: {history_frames: 24}
+manual: {box_frac: 0.07}     # click-to-track box size (fraction of frame width) when not on a detection
+
+logging:
+  dir: logs
+  auto_record: true          # Start tracking -> new session folder, Stop -> closed (UC-6)
+  record_on_start: false
+  frames:
+    mode: png                # png (lossless) | raw (lossless, fastest, frames.bin) | none
+    every_n: 6               # save every Nth frame (1 = all; full-res raw needs a fast NVMe)
+    max_queue: 48
+    prefer_raw_sensor: true  # save the Bayer mosaic when the camera provides it (3x smaller, lossless)
+  min_free_gb: 2.0           # TR-9: below this, frame saving pauses (telemetry continues)
+  warn_free_gb: 10.0
+
+ocr:
+  psm: 11                    # sparse text; a second pass uses psm 6 (uniform block)
+  target_height_px: 220      # crops are upscaled so card text is ~30+ px tall
+  margin: 0.08
+  min_conf: 60               # below this mean word confidence the result is reported as unreadable
+  # tesseract_cmd: "C:/Program Files/Tesseract-OCR/tesseract.exe"
+
+calibration: {file: calibration.json}
+selftest: {min_fps: 30, move_gimbal: true}
+
+gateway:                     # operator gateway: GUI on the laptop, engine on the Jetson
+  enabled: false
+  host: 0.0.0.0
+  port: 5600
+  video_hz: 30
+  status_hz: 20
+  jpeg_quality: 70
+  max_width: 960
+
+ros2:
+  enabled: false
+  namespace: ""
+  publish_image: false
+
+ui:
+  fps: 60

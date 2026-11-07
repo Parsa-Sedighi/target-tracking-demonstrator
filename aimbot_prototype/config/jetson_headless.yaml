@@ -1,0 +1,13 @@
+# Engine on the Jetson without a monitor; the operator GUI runs on the laptop (PRD architecture).
+#   Jetson:  python -m aimbot -c jetson_headless --headless
+#   Laptop:  python -m aimbot --connect <jetson-ip>
+extends: jetson_hw.yaml
+
+gateway:
+  enabled: true
+  host: 0.0.0.0
+  port: 5600
+  video_hz: 30
+  status_hz: 20
+  jpeg_quality: 70
+  max_width: 960

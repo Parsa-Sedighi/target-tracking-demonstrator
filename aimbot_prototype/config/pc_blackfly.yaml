@@ -1,0 +1,19 @@
+# FLIR Blackfly S plugged into the Windows PC (before the Jetson / gimbal arrive):
+# real camera + YOLO on the RTX GPU, no gimbal (commands are displayed, not sent).
+# Needs the Spinnaker SDK for Windows + the PySpin wheel for your Python (cp312 or cp310).
+#   python -m aimbot -c pc_blackfly
+extends: jetson_hw.yaml
+
+gimbal:
+  backend: none
+lidar:
+  backend: none
+detector:
+  model: models/aimbot_yolo26n.pt   # .pt on the PC (TensorRT .engine files are built per device)
+  fallback_model: [yolo26n.pt]
+  assist_model: [yolo26n.pt]
+  device: auto
+logging:
+  dir: logs
+selftest:
+  move_gimbal: false

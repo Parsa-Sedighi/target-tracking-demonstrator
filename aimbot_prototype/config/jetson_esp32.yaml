@@ -1,0 +1,17 @@
+# Final electrical architecture from the part list: Jetson --USB--> ESP32-S3 carrier PCB
+# --3.3 V UART/MAVLink--> Gremsy Mio, and TF02-Pro --UART--> ESP32.
+# The Jetson side of the ESP32 protocol is implemented (docs/ICD.md section 4); the ESP32
+# firmware is the ECE task. Until it exists, test against the emulator:
+#   python tools/esp32_emulator.py --listen 5770
+#   python -m aimbot -c jetson_esp32 --set gimbal.port=socket://127.0.0.1:5770 --set lidar.port=socket://127.0.0.1:5770
+extends: jetson_hw.yaml
+
+gimbal:
+  backend: esp32
+  port: /dev/ttyACM0          # ESP32-S3 native USB CDC
+  baud: 921600                # ignored by USB CDC, used by UART bridges
+
+lidar:
+  backend: esp32              # readings arrive in E2J_LIDAR messages on the same link
+  port: /dev/ttyACM0
+  baud: 921600

@@ -1,0 +1,93 @@
+# NVIDIA Jetson Orin Nano Super + FLIR Blackfly S (BFS-U3-28S5C-C, Kowa LM8JC 8 mm)
+# + Gremsy Mio over MAVLink (direct UART, e.g. FT232 bench adapter) + Benewake TF02-Pro.
+#   python -m aimbot -c jetson_hw                 # GUI on the Jetson's monitor
+#   python -m aimbot -c jetson_headless --headless  # GUI on the laptop (see jetson_headless.yaml)
+#
+# FIRST POWER-UP: run the stand-alone checks before this file:
+#   python tools/camera_test.py -c jetson_hw
+#   python tools/lidar_test.py --port /dev/ttyUSB1
+#   python tools/gimbal_test.py --port /dev/ttyUSB0 --protocol v1     (gimbal clamped, payload balanced, E-stop in reach)
+extends: default.yaml
+
+sensors:
+  _replace: true
+  vis:
+    backend: spinnaker
+    serial: ""                # empty = first camera found
+    pixel_format: BayerRG8    # 130 fps at full res; debayered on the Jetson
+    width: 1936
+    height: 1464
+    fps: 100                  # leave headroom below 130; 60 also fine
+    exposure: manual
+    exposure_us: 2000         # short exposure = less motion blur on a falling ball; raise in dim rooms
+    gain_db: 12
+    throughput_limit_mbps: 380
+    timestamp_ref: start_of_exposure
+    latency_ms: 10            # only used if the camera clock cannot be synchronised
+    log_raw_bayer: true
+    intrinsics:
+      focal_mm: 8.0           # replace with tools/calibrate_camera.py output (fx, fy, cx, cy, dist)
+      pixel_um: 4.5
+  # Second imaging sensor (ES-07.1). A generic UVC/V4L2 SWIR camera would look like:
+  # swir: {backend: opencv, source: /dev/video2, api: v4l2, width: 640, height: 512, fps: 60, intrinsics: {hfov_deg: 40}}
+camera:
+  active: vis
+
+gimbal:
+  backend: gremsy
+  port: /dev/ttyUSB0          # FT232 USB-UART (3.3 V) -> Gremsy COM2/COM3 (TX->RX, RX->TX, GND)
+  baud: 115200
+  protocol: v1                # v1 = gSDK default for Mio (DO_MOUNT_CONTROL / MOUNT_ORIENTATION); v2 = gimbal protocol v2
+  gimbal_mode: follow         # follow = yaw relative to the base (encoders, no drift on a fixed base)
+  feedback_hz: 50
+  max_send_hz: 50             # keep COMMAND_LONG traffic well inside 115200 baud
+  feedback_latency_ms: 5
+  connect_timeout_s: 5
+  max_rate_dps: 100
+  limits_deg: {pan_min: -170, pan_max: 170, tilt_min: -45, tilt_max: 90}
+  invert_pan: false           # flip if +pan moves the camera left on your mounting
+  invert_tilt: false
+
+lidar:
+  backend: serial
+  port: /dev/ttyUSB1          # TF02-Pro UART (3.3 V LVTTL) on a second USB-UART adapter
+  baud: 115200
+  beam_deg: 3.0
+
+detector:
+  backend: yolo
+  # YOLO26 TensorRT engines, built ON the Jetson:  python3 tools/export_tensorrt.py --all
+  model: models/aimbot_yolo26n.engine          # trained drone model (tools/train_yolo26.py on the PC)
+  fallback_model: [models/aimbot_yolo26n.pt, models/yolo26n.engine, yolo26n.pt]
+  assist_model: [models/yolo26n.engine, yolo26n.pt]   # COCO "sports ball" for the ball-drop test
+  device: "0"
+  imgsz: 640
+  roi_imgsz: 320
+  conf: 0.30
+  max_hz: 30
+  roi_when_tracking: true     # small targets at 20 ft need the native-resolution crop
+  full_frame_every: 5
+
+control:
+  mode: angle
+  lead_ms: 60                 # tune on the bench: transport + Mio position-loop lag
+  rate_hz: 100
+
+micro:
+  confirm_timeout_s: 1.5
+  max_miss_s: 0.15
+
+logging:
+  dir: ~/aimbot_logs          # keep it on the NVMe
+  frames:
+    mode: raw                 # lossless Bayer frames in frames.bin (tools/export_frames.py converts)
+    every_n: 4                # 25 fps of 100; every_n 1 = all frames (~280 MB/s at 1936x1464)
+
+ocr: {psm: 11}
+
+selftest:
+  min_fps: 60
+  move_gimbal: true
+
+ros2:
+  enabled: false              # true after: source /opt/ros/humble/setup.bash

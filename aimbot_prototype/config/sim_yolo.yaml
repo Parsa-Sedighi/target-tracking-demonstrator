@@ -1,0 +1,9 @@
+# Simulator, but detections come from a real YOLO model instead of simulator ground truth.
+# The cartoon targets are not COCO objects, so expect few detections unless you train a model on
+# simulator frames (or swap in real recorded video with: sensors.vis.backend=opencv, source=<file>).
+# Mostly useful to measure YOLO latency on your GPU inside the full pipeline.
+extends: default.yaml
+
+detector:
+  backend: yolo              # YOLO26 (models/aimbot_yolo26n.pt, else COCO yolo26n.pt)
+  conf: 0.15

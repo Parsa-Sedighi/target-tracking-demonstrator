@@ -1,0 +1,13 @@
+# Windows / Linux PC (Python 3.10 - 3.13; 3.12 if you plug the Blackfly into the PC: PySpin ships cp312 wheels)
+# For GPU YOLO on an NVIDIA card install PyTorch with CUDA FIRST (see README), then:
+#   pip install -r requirements.txt
+numpy>=1.23
+opencv-python>=4.8        # swap for opencv-contrib-python if you want the CSRT/KCF micro trackers
+PyQt6>=6.5
+PyYAML>=6.0
+pyserial>=3.5
+pymavlink>=2.4.40
+pytesseract>=0.3.10       # also needs the Tesseract program (README: OCR)
+ultralytics>=8.4          # YOLO26 (8.4.0+); tested with 8.4.202
+matplotlib>=3.6           # tools/analyze_run.py plots
+pytest>=7

@@ -1,0 +1,48 @@
+# Real camera + real YOLO on your PC, no gimbal (dry run: the GUI shows what would be commanded).
+#   python -m aimbot -c webcam
+# Try it: pick "ball" or "phone" or "person" as the seek class, or click/drag anything to track it.
+extends: default.yaml
+
+sensors:
+  _replace: true
+  webcam:
+    backend: opencv
+    source: 0                 # 0 = first webcam; or a video file path / RTSP URL
+    width: 1280
+    height: 720
+    fps: 30
+    latency_ms: 40            # typical webcam exposure + USB + driver delay
+    intrinsics: {hfov_deg: 70}   # typical laptop/USB webcam; run tools/calibrate_camera.py for real numbers
+  # second sensor to demonstrate hot-swap (FR-10), e.g. another USB camera:
+  # swir: {backend: opencv, source: 1, width: 640, height: 512, fps: 30, intrinsics: {hfov_deg: 40}}
+camera:
+  active: webcam
+
+gimbal:
+  backend: none               # no gimbal attached: angles stay 0, commands are only displayed/logged
+lidar:
+  backend: none
+
+detector:
+  backend: yolo               # YOLO26: models/aimbot_yolo26n.pt (drones), else yolo26n.pt (COCO, auto-download)
+  assist_classes: ["sports ball", "cell phone", "person"]   # from the COCO model, for desk tests
+  imgsz: 640
+  conf: 0.30
+  max_hz: 30
+  roi_when_tracking: false
+
+seek:
+  target_class: auto
+  priority: [drone, ball, phone, person]
+  min_conf: 0.45
+
+micro:
+  confirm_timeout_s: 1.5      # real YOLO misses more than the simulator
+  max_miss_s: 0.2
+
+search:
+  coast_s: 0.0
+
+selftest:
+  min_fps: 20
+  move_gimbal: false
