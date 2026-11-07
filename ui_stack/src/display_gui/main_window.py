@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (QApplication, QComboBox, QFileDialog, QGroupBox,
 
 from demo_detector import DemoDetector
 from video_canvas import HUDOverlayRenderer  # Parsa's box/crosshair drawing
+from camera_source import CameraSource, load_camera_config
 
 DEMO_SIZE = (960, 540)          # width, height of the demo background
 LOST_FRAMES_LIMIT = 15          # frames without the target before SEARCHING
@@ -36,7 +37,7 @@ class VideoLabel(QLabel):
         self.setAlignment(Qt.AlignCenter)
         self.setMinimumSize(640, 360)
         self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
-        self.setStyleSheet("background-color: #111;")
+        self.setStyleSheet("background-color: #111; color: #e5e7eb;")
         self._frame_w = 0
         self._frame_h = 0
 
@@ -64,7 +65,8 @@ class VideoLabel(QLabel):
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, detector=None, detector_name=None):
+    def __init__(self, detector=None, detector_name=None, camera_config_path=None,
+                 camera_capture_factory=None):
         super().__init__()
         self.setWindowTitle("Target Tracking Demonstrator - Operator UI")
         # The real model (e.g. RF-DETR) runs on webcam / video frames. The Demo source has
@@ -74,7 +76,10 @@ class MainWindow(QMainWindow):
         self.demo_detector = DemoDetector()
         self.renderer = HUDOverlayRenderer()
 
-        self.capture = None          # cv2.VideoCapture, or None while on Demo
+        self.camera_config_path = camera_config_path
+        self.camera_capture_factory = camera_capture_factory
+        self.camera_error = False
+        self.capture = None          # CameraSource, video-file capture, or None on Demo
         self.source_name = "Demo"
         self.is_file = False
         self.selected = None         # {"class": str, "center": (x, y)} of the chosen target
@@ -93,6 +98,8 @@ class MainWindow(QMainWindow):
         self.timer = QTimer(self)
         self.timer.timeout.connect(self._tick)
         self.timer.start(33)         # about 30 frames per second
+        if camera_config_path is not None:
+            self.source_box.setCurrentText("Camera")
 
     # ---------- layout ----------
     def _build_ui(self):
@@ -100,10 +107,18 @@ class MainWindow(QMainWindow):
         self.video.clicked.connect(self._on_video_clicked)
 
         self.source_box = QComboBox()
-        self.source_box.addItems(["Demo", "Webcam", "Video file..."])
+        self.source_box.addItems(["Demo", "Camera", "Video file..."])
         self.source_box.currentTextChanged.connect(self._on_source_changed)
         source_group = QGroupBox("Video source")
-        QVBoxLayout(source_group).addWidget(self.source_box)
+        source_layout = QVBoxLayout(source_group)
+        source_layout.addWidget(self.source_box)
+        self.camera_label = QLabel()
+        self.camera_label.setWordWrap(True)
+        source_layout.addWidget(self.camera_label)
+        self.restart_camera_button = QPushButton("Restart camera")
+        self.restart_camera_button.setEnabled(False)
+        self.restart_camera_button.clicked.connect(self._restart_camera)
+        source_layout.addWidget(self.restart_camera_button)
 
         self.state_label = QLabel()
         self.state_label.setAlignment(Qt.AlignCenter)
@@ -186,13 +201,16 @@ class MainWindow(QMainWindow):
     def _set_source(self, name, path=None):
         """Switch the video source. Returns False if it could not be opened."""
         capture, interval = None, 33
-        if name == "Webcam":
-            capture = cv2.VideoCapture(0)
-            if not capture.isOpened():
-                capture.release()
-                self.statusBar().showMessage(
-                    "Could not open the webcam. Check camera permission for VS Code.")
-                return False
+        if name == "Camera":
+            if self.capture is not None:
+                self.capture.release()
+            self.capture = CameraSource(capture_factory=self.camera_capture_factory)
+            self.source_name, self.is_file = "Camera", False
+            self.timer.setInterval(33)
+            self.target_fps = 30
+            self.restart_camera_button.setEnabled(True)
+            # A failed camera stays selected and shows an error, never fake demo video.
+            return self._restart_camera()
         elif name == "Video file...":
             capture = cv2.VideoCapture(path)
             if not capture.isOpened():
@@ -208,12 +226,51 @@ class MainWindow(QMainWindow):
         self.source_name = name
         self.timer.setInterval(interval)
         self.target_fps = round(1000 / interval)
-        self.frame_times.clear()
-        self.tracks = {}
-        self._clear_target()
+        self.camera_error = False
+        self.camera_label.clear()
+        self.restart_camera_button.setEnabled(False)
+        self._reset_stream()
         self._show_detector()
         self.statusBar().showMessage(f"Source: {name}")
         return True
+
+    def _reset_stream(self):
+        self.frame_times.clear()
+        self.fps_label.setText("FPS: --")
+        self.tracks = {}
+        self.next_id = 1
+        self.last_dets = []
+        self._clear_target()
+        self.det_label.setText("(none)")
+        self.target_label.setText("No target selected.\nClick a box in the video.")
+
+    def _restart_camera(self):
+        """UC-10: release the old sensor, reload configuration, probe the new feed."""
+        if self.source_name != "Camera":
+            return False
+        self.capture.release()
+        self._reset_stream()
+        self.camera_error = False
+        try:
+            config = load_camera_config(self.camera_config_path)
+            self.camera_label.setText(config.label)
+            if not self.capture.restart(config):
+                self._camera_failed(self.capture.last_error)
+                return False
+        except (OSError, ValueError) as exc:
+            self.camera_label.setText("Camera configuration error")
+            self._camera_failed(str(exc))
+            return False
+        self._show_detector()
+        self.statusBar().showMessage(f"{config.label} ready. Select a target to start tracking.")
+        return True
+
+    def _camera_failed(self, message):
+        self.camera_error = True
+        self._reset_stream()
+        self.video.clear()
+        self.video.setText("Camera unavailable\nReconnect the camera, then press Restart camera.")
+        self.statusBar().showMessage(message)
 
     def _active_detector(self):
         if self.capture is None or self.model_detector is None:
@@ -224,7 +281,7 @@ class MainWindow(QMainWindow):
         if self._active_detector() is self.demo_detector:
             text = "Detector: Demo (fake)"
             if self.model_detector is not None:
-                text += f"\n{self.model_name} loaded - pick Webcam or a video file to use it"
+                text += f"\n{self.model_name} loaded - pick Camera or a video file to use it"
         else:
             text = f"Detector: {self.model_name}"
         self.detector_label.setText(text)
@@ -241,6 +298,8 @@ class MainWindow(QMainWindow):
         if not ok and self.is_file:      # loop the video when it ends
             self.capture.set(cv2.CAP_PROP_POS_FRAMES, 0)
             ok, frame = self.capture.read()
+        if not ok and self.source_name == "Camera" and not self.camera_error:
+            self._camera_failed(self.capture.last_error)
         return frame if ok else None
 
     # ---------- main loop ----------
@@ -425,9 +484,9 @@ class MainWindow(QMainWindow):
         super().closeEvent(event)
 
 
-def main(detector=None, detector_name=None):
+def main(detector=None, detector_name=None, camera_config_path=None):
     app = QApplication(sys.argv)
-    window = MainWindow(detector, detector_name)
+    window = MainWindow(detector, detector_name, camera_config_path=camera_config_path)
     window.resize(1240, 720)
     window.show()
     sys.exit(app.exec())

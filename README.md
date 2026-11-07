@@ -172,3 +172,69 @@ The operator application is intended to provide a simple interface for monitorin
 5. Stop tracking or select a different target when needed.
 
 This workflow represents the intended software behavior and may be updated as development progresses.
+
+## UC-10 / PROJECT23-14: preliminary camera-swap testing
+
+`ros2_ws/src/integration_stack/sensor_interface/camera_source.py` provides a shared
+camera adapter for the existing operator UI. It converts decoded visible-color
+or monochrome frames to the same `uint8` BGR format consumed by the existing
+RF-DETR detector and HUD renderer. The UI's **Camera** source replaces the former
+**Webcam** entry; Demo and Video file sources keep their existing behavior.
+
+**Preliminary mock test only: real camera hardware and physical swapping are
+untested.** The mock backend generates synthetic visible and SWIR-style frames;
+it does not simulate SWIR optics or establish model accuracy. Tests reuse the
+existing `DemoDetector`, target-selection logic, tracking states, and HUD renderer.
+They do not run a trained RF-DETR model or a ROS ingestion node. The adapter can
+later be used by a ROS node once that integration exists.
+
+Install the existing UI dependencies and the test runner inside your venv:
+
+```bash
+python -m pip install -r ui_stack/requirements.txt pytest
+```
+
+Run the preliminary checks from the repository root:
+
+```bash
+python -m pytest ros2_ws/src/integration_stack/sensor_interface/test_camera_source.py ui_stack/tests/test_camera_swap.py -v -p no:cacheprovider
+```
+
+The tests inject camera frames and disconnection at the capture boundary. They
+check visible and monochrome ingestion, 12-bit samples stored in `uint16`, device
+release, missing cameras, invalid profiles, stale-frame removal, and successful
+tracking after restarting with the replacement sensor. Qt runs offscreen; no
+camera or GPU is opened.
+
+**Recorded preliminary result (2026-11-06):** 28 tests passed, with no failures,
+errors, or skips, on Windows with Python 3.11.0. The observed mock UI sequence was
+visible feed **TRACKING**, injected disconnect **IDLE** with no stale detections,
+then SWIR-style feed **TRACKING** after restart and target reselection. Real
+hardware acceptance and trained-model accuracy remain untested.
+
+To see the same path in the operator application, start either example:
+
+```bash
+python ui_stack/run_ui.py --demo --camera-config ros2_ws/src/bringup/config/camera_visible_mock.json
+python ui_stack/run_ui.py --demo --camera-config ros2_ws/src/bringup/config/camera_swir_mock.json
+```
+
+For a restart demonstration in one window, use a temporary copy of either JSON
+profile, pass that file with `--camera-config`, replace its contents with the other
+profile, and press **Restart camera**. The UI reloads the file, releases the old
+capture, validates a frame from the new sensor, and clears old target IDs and
+selection. Select a target again and press **Start tracking**. Mock sources are
+labeled **PRELIMINARY MOCK** on screen. A failed camera shows **Camera unavailable**
+instead of silently substituting demo video.
+
+For future hardware testing, change `backend` to `opencv` and set `device` to the
+camera index or device path. `pixel_format` describes the decoded output:
+`bgr8`, `mono8`, or `mono16`. For `mono16`, set `white_level` to the sensor's maximum
+sample value, such as 4095 for unpacked, right-aligned 12-bit data. Scaling uses
+that fixed range rather than changing with each frame. OpenCV backend support is
+device-dependent; packed pixels, Bayer data, and vendor SDK transports need an
+appropriate driver adapter. No SWIR camera driver is claimed to be validated.
+
+Hardware acceptance remains: disconnect the visible camera, attach the SWIR
+camera, update only the sensor configuration if needed, restart ingestion, and
+verify live video and detector initialization with the actual devices and model.

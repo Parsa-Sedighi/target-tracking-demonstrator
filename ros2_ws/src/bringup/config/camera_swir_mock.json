@@ -1,0 +1,7 @@
+{
+  "backend": "mock",
+  "device": 0,
+  "spectrum": "swir",
+  "pixel_format": "mono16",
+  "white_level": 4095
+}
