@@ -116,6 +116,7 @@ class SimTarget:
     sprite: np.ndarray
     aspect: float = 1.0            # bbox height / width
     label: str = ""
+    planar: bool = False           # flat board in the world YZ plane, rather than a rounded target
 
     def position(self, t: float) -> Optional[np.ndarray]:
         return self.path(t)
@@ -201,6 +202,11 @@ def build_scenario(name: str, card_text: str = "AIM 23"):
         tg = [SimTarget(3, "sports ball", 0.067, _ball_drop(10 * FT, 1.5, 1.0, 8.0), ball, 1.0, "T3 ball")]
     elif name == "card_walk":        # ES-02.1: T2 at <= 1 m/s, 10 ft
         tg = [SimTarget(2, "card", 0.152, _card_walk(10 * FT, 1.0), card, 1.0, "T2 card")]
+    elif name == "calibration_board":  # PROJECT23-11 / UC-07: stationary mock board, face at 10 ft
+        board = _sprite_card("UC-07\nMOCK")
+        cv2.drawMarker(board, (180, 180), (0, 0, 255, 255), cv2.MARKER_CROSS, 30, 2)
+        tg = [SimTarget(7, "card", 0.3048, lambda t: np.array([10 * FT, 0.0, 0.0]),
+                        board, label="PRELIMINARY MOCK board", planar=True)]
     elif name == "crossing":         # ES-01.4: two targets cross, keep the selected one
         tg = [SimTarget(1, "drone", 0.30, _hand_path(8 * FT, 0.0, 1.0, 1.0, 1.0), drone, 0.62, "T1 drone"),
               SimTarget(4, "hand", 0.20, _hand_path(6 * FT, 0.0, 1.0, -1.0, 1.0), hand, 1.0, "hand")]
@@ -216,7 +222,7 @@ def build_scenario(name: str, card_text: str = "AIM 23"):
     return tg, occ
 
 
-SCENARIOS = ["mixed", "drone_lateral", "ball_drop", "card_walk", "crossing", "occlusion"]
+SCENARIOS = ["mixed", "drone_lateral", "ball_drop", "card_walk", "crossing", "occlusion", "calibration_board"]
 
 
 # --------------------------------------------------------------------------- world
@@ -444,6 +450,9 @@ class SimWorld:
             truth.append({"id": tg.tid, "cls": tg.cls, "bbox": (bx1, by1, bx2, by2), "center": (u, v),
                           "full_bbox": (x1, y1, x2, y2), "visible": frac, "depth": depth,
                           "pos": (float(p[0]), float(p[1]), float(p[2])), "label": tg.label})
+        if self.scenario == "calibration_board":
+            cv2.putText(img, "PRELIMINARY MOCK - hardware untested", (16, 30),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 210, 255), 2, cv2.LINE_AA)
         return img, truth
 
     def target_truth(self, t: float) -> list[dict]:
@@ -463,6 +472,15 @@ class SimWorld:
         for tg in self.targets:
             p = tg.position(ts)
             if p is None:
+                continue
+            if tg.planar:
+                # Intersect the beam centre with the board face. Do not subtract the board's
+                # radius: its face (not its centre minus half its width) is the reference distance.
+                if d[0] > 1e-9:
+                    hit = p[0] / d[0]
+                    if (hit > 0 and abs(hit * d[1] - p[1]) <= tg.size_m / 2
+                            and abs(hit * d[2] - p[2]) <= tg.size_m * tg.aspect / 2):
+                        best = min(best, hit)
                 continue
             dist = float(np.linalg.norm(p))
             ang = math.acos(float(np.clip(np.dot(d, p / dist), -1, 1)))
