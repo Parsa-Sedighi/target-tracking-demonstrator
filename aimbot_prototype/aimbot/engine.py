@@ -172,6 +172,7 @@ class Engine:
         self.ros2 = None
         self.selftest_result: dict = {}
         self.calib_result: dict = {}
+        self._calibration_lock = threading.Lock()
 
     # ================================================================== lifecycle
     def start(self) -> None:
@@ -329,6 +330,10 @@ class Engine:
         ok, msg = True, ""
         if cmd not in ("jog",):
             self._event("operator", f"{cmd} {json.dumps({k: v for k, v in c.items() if k != 'cmd'})}")
+        if self._calibration_lock.locked() and cmd in (
+                "start", "resume", "jog", "home", "selftest", "set_boresight", "reset_boresight",
+                "switch_sensor", "set_scenario"):
+            return {"ok": False, "msg": "wait for calibration to finish or stop"}
         if cmd == "start":
             ok = self.sm.fire("start", "operator start") or self.sm.state == SEARCHING
         elif cmd == "stop":
@@ -350,10 +355,22 @@ class Engine:
             self.selector.target_class = str(c.get("cls", "auto"))
             msg = f"seeking {self.selector.target_class}"
         elif cmd == "calibrate":
-            if self.sm.state != IDLE:
+            try:
+                known_m = float(c.get("distance_m", 3.048))
+            except (TypeError, ValueError, OverflowError):
+                known_m = math.nan
+            if not math.isfinite(known_m) or known_m <= 0:
+                ok, msg = False, "calibration distance must be finite and positive"
+            elif self.sm.state != IDLE:
                 ok, msg = False, "stop tracking before calibrating"
+            elif not self._calibration_lock.acquire(blocking=False):
+                ok, msg = False, "previous calibration is still finishing"
+            elif self.sm.fire("calibrate", f"calibration at {known_m:.3f} m"):
+                self.calib_result = {}
+                self._spawn(lambda: self._calibrate(known_m), "calibration")
             else:
-                threading.Thread(target=self._calibrate, args=(float(c.get("distance_m", 3.048)),), daemon=True).start()
+                self._calibration_lock.release()
+                ok, msg = False, "calibration already active"
         elif cmd == "set_boresight":
             self._set_boresight(float(c["x"]), float(c["y"]))
         elif cmd == "reset_boresight":
@@ -1135,57 +1152,99 @@ class Engine:
             log.warning("could not read calibration: %s", exc)
         return {}
 
-    def _save_calibration(self) -> None:
+    def _save_calibration(self) -> bool:
+        pending = self.calib_path.with_name(self.calib_path.name + ".tmp")
         try:
-            self.calib_path.write_text(json.dumps(self.calib, indent=2))
+            pending.write_text(json.dumps(self.calib, indent=2))
+            pending.replace(self.calib_path)
+            return True
         except Exception as exc:
             log.warning("could not save calibration: %s", exc)
+            return False
+        finally:
+            pending.unlink(missing_ok=True)
 
     # ---- calibration routine (UC-7)
+    def _calibration_wait(self, seconds: float) -> None:
+        end = clock.now() + seconds
+        while True:
+            if self._stop.is_set() or self.sm.state != CALIBRATING:
+                raise RuntimeError("calibration interrupted")
+            remaining = end - clock.now()
+            if remaining <= 0:
+                return
+            self._stop.wait(min(0.05, remaining))
+
     def _calibrate(self, known_m: float) -> None:
-        if not self.sm.fire("calibrate", f"calibration at {known_m:.3f} m"):
-            return
-        res = {"known_distance_m": known_m, "steps": []}
+        res = {"known_distance_m": known_m, "steps": [],
+               "preliminary_mock": self.gimbal.kind == "sim" or getattr(self.lidar, "kind", "") == "sim"}
+        previous = dict(self.calib)
+        old_zero = self.gimbal.zero_pan, self.gimbal.zero_tilt
+        old_offset = self.lidar.range_offset_m if self.lidar else None
         try:
+            self._calibration_wait(0)
+            if self.gimbal.kind == "none" or self.gimbal.feedback_age() > 0.5:
+                raise RuntimeError("no fresh gimbal feedback")
+            if self.lidar is None or isinstance(self.lidar, NoLidar):
+                raise RuntimeError("no LiDAR connected")
             self.gimbal.home()
             t_end = clock.now() + 6.0
             while clock.now() < t_end:
                 g = self.gimbal.state()
                 if abs(D(g.pan)) < 0.3 and abs(D(g.tilt)) < 0.3 and abs(D(g.pan_rate)) < 1 and abs(D(g.tilt_rate)) < 1:
                     break
-                time.sleep(0.05)
-            time.sleep(0.4)
+                self._calibration_wait(0.05)
+            self._calibration_wait(0.4)
             g = self.gimbal.state()
+            home_ok = (self.gimbal.feedback_age() <= 0.5 and abs(D(g.pan)) < 0.3 and abs(D(g.tilt)) < 0.3
+                       and abs(D(g.pan_rate)) < 1 and abs(D(g.tilt_rate)) < 1)
             res["steps"].append({"step": "home", "pan_deg": round(D(g.pan), 3), "tilt_deg": round(D(g.tilt), 3),
-                                 "ok": abs(D(g.pan)) < 1 and abs(D(g.tilt)) < 1})
+                                 "ok": home_ok})
+            if not home_ok:
+                raise RuntimeError("gimbal did not settle at home")
             zp, zt = self.gimbal.zero_here()
-            self.calib["zero_pan_deg"], self.calib["zero_tilt_deg"] = D(zp), D(zt)
+            zero_time = clock.now()
+            self._calibration_wait(0.1)
+            g = self.gimbal.state()
+            zero_ok = g.t > zero_time and abs(D(g.pan)) < 0.3 and abs(D(g.tilt)) < 0.3
             res["steps"].append({"step": "encoder zero", "zero_pan_deg": round(D(zp), 4), "zero_tilt_deg": round(D(zt), 4),
-                                 "ok": True})
-            if self.lidar is not None and not isinstance(self.lidar, NoLidar):
-                time.sleep(1.0)
-                mean, n = self.lidar.mean_over(1.0)
-                if mean is not None and n >= 5:
-                    raw = mean - self.lidar.range_offset_m
-                    self.lidar.range_offset_m = known_m - raw
-                    self.calib["range_offset_m"] = self.lidar.range_offset_m
-                    time.sleep(0.3)
-                    after, _ = self.lidar.mean_over(0.25)
-                    err_in = abs((after or mean) - known_m) / 0.0254
-                    res["steps"].append({"step": "lidar range offset", "raw_mean_m": round(raw, 4), "n": n,
-                                         "offset_m": round(self.lidar.range_offset_m, 4), "residual_in": round(err_in, 2),
-                                         "ok": err_in <= 2.0})
-                else:
-                    res["steps"].append({"step": "lidar range offset", "ok": False, "error": "no valid LiDAR readings"})
-            self.calib["calibrated_wall"] = time.strftime("%Y-%m-%d %H:%M:%S")
-            self._save_calibration()
-            res["ok"] = all(s.get("ok") for s in res["steps"])
+                                 "pan_deg": D(g.pan), "tilt_deg": D(g.tilt), "ok": zero_ok})
+            if not zero_ok:
+                raise RuntimeError("encoder zero not confirmed by fresh feedback")
+            self._calibration_wait(1.0)
+            mean, n = self.lidar.mean_over(1.0)
+            if mean is None or not math.isfinite(mean) or n < 5:
+                raise RuntimeError("no valid LiDAR readings")
+            raw = mean - self.lidar.range_offset_m
+            self.lidar.range_offset_m = known_m - raw
+            self._calibration_wait(0.3)
+            after, count = self.lidar.mean_over(0.25)
+            if after is None or not math.isfinite(after) or count < 5:
+                raise RuntimeError("no fresh LiDAR verification readings")
+            err_in = abs(after - known_m) / 0.0254
+            within_tolerance = err_in <= 2.0 or math.isclose(err_in, 2.0, rel_tol=0, abs_tol=1e-9)
+            res["steps"].append({"step": "lidar range offset", "raw_mean_m": round(raw, 4), "n": n,
+                                 "offset_m": round(self.lidar.range_offset_m, 4), "verified_mean_m": after,
+                                 "verification_n": count, "residual_in": round(err_in, 2), "ok": within_tolerance})
+            if not within_tolerance:
+                raise RuntimeError("LiDAR residual exceeds +/-2 inches")
+            self._calibration_wait(0)
+            self.calib.update(zero_pan_deg=D(zp), zero_tilt_deg=D(zt), range_offset_m=self.lidar.range_offset_m,
+                              calibrated_wall=time.strftime("%Y-%m-%d %H:%M:%S"))
+            if not self._save_calibration():
+                raise RuntimeError("could not save calibration")
+            res["ok"] = True
         except Exception as exc:
+            self.gimbal.zero_pan, self.gimbal.zero_tilt = old_zero
+            if self.lidar is not None:
+                self.lidar.range_offset_m = old_offset
+            self.calib = previous
             res["ok"] = False
             res["error"] = str(exc)
         self.calib_result = res
         self._event("calibration", json.dumps(res))
         self.sm.fire("calibrated", "calibration " + ("passed" if res.get("ok") else "FAILED"))
+        self._calibration_lock.release()
 
     # ---- self test (ES-10.1)
     def _selftest(self) -> None:

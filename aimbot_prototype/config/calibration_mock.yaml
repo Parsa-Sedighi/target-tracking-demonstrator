@@ -1,0 +1,18 @@
+# PROJECT23-11 / UC-07: preliminary mock only; no physical devices or model needed.
+extends: default.yaml
+sim:
+  scenario: calibration_board
+gimbal:
+  backend: sim
+lidar:
+  backend: sim
+  bias_cm: 2.5
+  noise_cm: 0.2
+  corrupt_prob: 0.0
+detector:
+  backend: sim_truth
+  enabled: false
+logging:
+  auto_record: false
+calibration:
+  file: calibration_mock.json

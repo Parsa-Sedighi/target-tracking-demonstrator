@@ -421,8 +421,13 @@ class MainWindow(QMainWindow):
         calib = s.get("calibration") or {}
         parts = []
         if cal:
+            if cal.get("preliminary_mock"):
+                parts.append("<b>PRELIMINARY MOCK - physical hardware untested</b>")
             parts.append(("<b style='color:#3c3'>PASS</b>" if cal.get("ok") else "<b style='color:#f55'>FAIL</b>")
                          + " " + "; ".join(f"{x['step']}: {'ok' if x.get('ok') else 'FAIL'}" for x in cal.get("steps", [])))
+            if cal.get("error"):
+                parts.append(html.escape(cal["error"]))
+            parts.append("Crosshair alignment: use Set aim point on the board centre; physical alignment unverified.")
         if calib:
             parts.append(f"zero pan {_fmt(calib.get('zero_pan_deg'), 3)} tilt {_fmt(calib.get('zero_tilt_deg'), 3)} deg, "
                          f"LiDAR offset {_fmt(calib.get('range_offset_m'), 3)} m, aim "

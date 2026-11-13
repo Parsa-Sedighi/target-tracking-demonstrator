@@ -1,0 +1,81 @@
+{
+  "issue": "PROJECT23-11",
+  "use_case": "UC-07",
+  "status": "PRELIMINARY MOCK - physical hardware untested",
+  "run_timestamp": "2026-11-13T12:42:14.237429-08:00",
+  "branch": "jayden/006-PROJECT23-11-calibration-mock",
+  "base_commit": "6ee96aa",
+  "environment": {
+    "platform": "Windows-10-10.0.26200-SP0",
+    "python": "3.11.0",
+    "qt_platform": "offscreen"
+  },
+  "uc07_tests": {
+    "passed": 28,
+    "failed": 0
+  },
+  "prototype_suite": {
+    "passed": 116,
+    "failed": 1,
+    "skipped": 8,
+    "failure": "tests/test_integration.py::test_reacquire_after_occlusion",
+    "baseline_check": "Same test also failed on unchanged main at 6ee96aa in the same environment.",
+    "skips": [
+      "test_find_unfinished_training_run",
+      "test_stalled_run_ends_its_loader_processes_with_exit_code_75",
+      "test_trainer_gives_validation_its_own_loader_count",
+      "test_split_7z_volumes",
+      "test_coco_fallback_maps_proxies_to_drone",
+      "test_trained_model_keeps_bird_and_adds_coco_ball",
+      "test_broken_model_file_falls_back",
+      "test_camera_aug_installs_into_ultralytics_training_only"
+    ]
+  },
+  "measurements": {
+    "status": "PRELIMINARY MOCK - physical hardware untested",
+    "known_distance_m": 3.048,
+    "measured_distance_m": 3.0493000000000063,
+    "range_error_in": 0.0511811023624526,
+    "crosshair_error_px": 0.6271609852629602,
+    "encoder_pan_deg": -0.003377625548397441,
+    "encoder_tilt_deg": 0.009913471779485173,
+    "calibration": {
+      "known_distance_m": 3.048,
+      "steps": [
+        {
+          "step": "home",
+          "pan_deg": -0.004,
+          "tilt_deg": -0.005,
+          "ok": true
+        },
+        {
+          "step": "encoder zero",
+          "zero_pan_deg": -0.0039,
+          "zero_tilt_deg": -0.0047,
+          "pan_deg": -0.003377625548397441,
+          "tilt_deg": 0.009913471779485173,
+          "ok": true
+        },
+        {
+          "step": "lidar range offset",
+          "raw_mean_m": 3.0707,
+          "n": 100,
+          "offset_m": -0.0227,
+          "verified_mean_m": 3.0485000000000064,
+          "verification_n": 25,
+          "residual_in": 0.02,
+          "ok": true
+        }
+      ],
+      "preliminary_mock": true,
+      "ok": true
+    }
+  },
+  "limits": [
+    "Software zero offsets and fresh simulated feedback; no physical encoder reset verified.",
+    "Manual GUI crosshair alignment to a rendered board; physical camera/LiDAR alignment untested.",
+    "Simulator assumes a shared camera/LiDAR axis and origin.",
+    "Board face at 10 feet, LiDAR bias +2.5 cm; separate post-correction samples.",
+    "ROS 2, Jetson, trained model and physical devices not exercised."
+  ]
+}
