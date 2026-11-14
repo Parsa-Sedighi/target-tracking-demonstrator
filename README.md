@@ -11,11 +11,21 @@ A multidisciplinary embedded vision and control system for real-time target trac
 | [`ros2_ws/src/`](ros2_ws/src/) | Jetson | Main ROS 2 software: operator coordination, perception, hardware interfaces, logging, and system startup. |
 | [`ui_stack/`](ui_stack/) | Operator PC / laptop | The operator application for viewing video and tracking status, selecting targets, and sending commands. |
 | [`firmware/`](firmware/) | External microcontroller / real-time controller | Motor-control firmware and position feedback for the ECE subsystem. |
+| [`aimbot_prototype/`](aimbot_prototype/) | PC now; written for the Jetson | Standalone prototype of the full tracking pipeline with the YOLO26 detector. Parts of it can be moved into the stacks above later. |
 
 ## Hardware Used
 HuskyLens2 - https://www.dfrobot.com/huskylens/huskylens2
 
-**Current status:** this repository contains the folder scaffold. Each folder has a `placeholder.txt` file to preserve it in Git. The descriptions below explain the intended responsibilities; ROS 2 packages, the UI, and firmware have not been implemented yet.
+**Current status:** development is in progress, and none of it has run on the real hardware yet.
+
+| Area | State |
+| --- | --- |
+| `aimbot_prototype/` | Working end-to-end prototype on a PC (simulator, webcam or video file), with a trained YOLO26 model. |
+| `ui_stack/` | Operator UI with live video, detection overlays, target selection and camera switching; runs with demo detections or an RF-DETR model. |
+| `ros2_ws/src/` | Early Python modules: RF-DETR training/inference, state machine, camera source, telemetry logger, OCR. These are not yet packaged as ROS 2 nodes. |
+| `firmware/` | Not started (folders only). |
+
+Folders with no code yet keep a `placeholder.txt` file so Git preserves them.
 
 ## Setting up a Python virtual environment
 
@@ -82,10 +92,104 @@ In **Command Prompt (cmd.exe)**, activate with `.venv\Scripts\activate.bat` inst
 ### Using the environment
 
 - When the venv is active, your terminal prompt starts with `(.venv)`. Any `pip install` now installs into this project only.
-- Once a `requirements.txt` is added to the project, install dependencies with `pip install -r requirements.txt`.
+- There is no single `requirements.txt` at the repo root. Each part lists its own dependencies: `ui_stack/requirements.txt` for the operator UI, `aimbot_prototype/requirements.txt` for the prototype (in its own venv), and the RF-DETR install command under [Detection models](#detection-models).
 - To leave the environment, run `deactivate`.
-- Don't commit the `.venv/` folder — it is specific to your machine. Add `.venv/` to `.gitignore`.
+- The `.venv/` folder is specific to your machine and is already listed in `.gitignore`, so it won't be committed.
 - In VS Code, open the Command Palette and choose **Python: Select Interpreter**, then pick the interpreter inside `.venv`.
+
+## Detection models
+
+The project has two drone detectors. They live in different folders and use **separate virtual environments**, because their dependencies conflict (the prototype uses PyQt6 and full `opencv-python`; `ui_stack` uses PySide6 and `opencv-python-headless`).
+
+| | YOLO26n | RF-DETR Nano |
+| --- | --- | --- |
+| Code | [`aimbot_prototype/`](aimbot_prototype/) | [`rf_detr.py`](ros2_ws/src/perception_stack/detection_tracking/rf_detr.py) |
+| Status | **Trained model included**: `aimbot_prototype/models/aimbot_yolo26n.pt` | Training and inference code ready; **no trained model yet** |
+| Classes | drone, bird, airplane, helicopter | drone |
+| Venv | `aimbot_prototype/.venv` (Python 3.11–3.13) | repo-root `.venv` (Python 3.10+) |
+| Licence | Ultralytics YOLO: AGPL-3.0 | RF-DETR: Apache-2.0 |
+
+### YOLO26 — AimBot prototype
+
+A standalone prototype of the whole tracking pipeline (camera, YOLO26 detection, tracker, Kalman prediction, gimbal control, operator GUI, logging, simulator). Run everything from the `aimbot_prototype/` folder. Full details are in [`aimbot_prototype/README.md`](aimbot_prototype/README.md).
+
+**Setup (once).** Install PyTorch first, then the rest:
+
+```bash
+cd aimbot_prototype
+python3.11 -m venv .venv                 # Windows: py -3.13 -m venv .venv
+source .venv/bin/activate                # Windows: .venv\Scripts\activate
+
+# NVIDIA GPU (Windows/Linux):
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
+# macOS or CPU only:
+pip install torch torchvision
+
+pip install -r requirements.txt
+```
+
+Reading index cards (OCR) also needs the Tesseract program.
+
+**Run:**
+
+```bash
+python -m aimbot                                       # simulator; press Start tracking
+python -m aimbot -c webcam                             # trained YOLO26 on your webcam (no gimbal)
+python -m aimbot -c webcam --video path/to/clip.mp4 --target drone --auto-start   # on a video file
+python3 -m aimbot -c jetson_headless --headless        # on the Jetson with the hardware
+python -m aimbot --connect <jetson-ip>                 # GUI on the laptop, driving the Jetson
+```
+
+Use any drone video you have for `--video`; none is included in the repo. Run the app once with internet access so the stock COCO `yolo26n.pt` (used for ball / phone / person) downloads.
+
+**Retrain:** `python tools/train_yolo26.py --data <dataset.yaml>` (add `--quick` for a short pipeline check).
+
+**Model metrics** (stored in the checkpoint; validation set, averaged over all four classes): precision 0.82, recall 0.70, mAP@50 0.83. On macOS the prototype runs YOLO on the CPU (about 110 ms per frame); on an NVIDIA GPU or the Jetson it uses CUDA.
+
+### RF-DETR Nano — `rf_detr.py`
+
+A drone detector based on RF-DETR Nano, with commands to check a dataset, train, and run predictions. Its `DroneDetector` class is what the operator UI in `ui_stack/` loads. Run these commands from the **repository root**.
+
+**Setup (once)**, in the repo-root venv:
+
+```bash
+source .venv/bin/activate                # Windows: .venv\Scripts\activate
+
+# NVIDIA GPU (Windows/Linux; RTX 50-series needs CUDA 12.8+):
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
+# macOS or CPU only:
+pip install torch torchvision
+
+pip install "rfdetr[train]==1.11.2"
+```
+
+**Dataset.** The default dataset path is `uav_dataset/uav_dataset_release/visible` in the repo root (not stored in Git). Both YOLO format (`data.yaml` + `images/` and `labels/` folders) and Roboflow COCO exports (`train/`, `valid/`, `test/`, each with `_annotations.coco.json`) are accepted. Pass a different folder as the first argument to any command.
+
+**Run** (`S` is shorthand for the script path):
+
+```bash
+S=ros2_ws/src/perception_stack/detection_tracking/rf_detr.py   # Windows PowerShell: $S = "..."
+
+python $S check-data                             # validate the dataset before training
+python $S make-subset --train 2000 --val 400 --test 400   # optional small subset → datasets/uav_subset
+python $S train datasets/uav_subset --epochs 2   # quick smoke run
+python $S train --epochs 20                      # full run → runs/rfdetr_nano/
+python $S predict runs/rfdetr_nano/checkpoint_best_total.pth image.jpg
+python $S make-dummy-data                        # tiny synthetic dataset, for testing the pipeline only
+```
+
+Training picks the best device automatically (CUDA, then Apple MPS, then CPU) and downloads the pretrained Nano weights (~100 MB) on first use. Datasets go in `datasets/` and training output in `runs/`; both are ignored by Git.
+
+**Use the trained model in the operator UI:**
+
+```bash
+python -m pip install -r ui_stack/requirements.txt
+python ui_stack/run_ui.py                                   # uses runs/rfdetr_nano/checkpoint_best_total.pth
+python ui_stack/run_ui.py --model path/to/checkpoint.pth    # a specific checkpoint
+python ui_stack/run_ui.py --demo                            # fake detections, no model needed
+```
+
+**Status:** the full train → checkpoint → predict pipeline has been tested on synthetic data (COCO format). Dataset checks and subset creation have been tested on YOLO format. A training run on the real UAV dataset has not been done yet, so there are no accuracy numbers for RF-DETR.
 
 ## Folder layout
 
@@ -116,10 +220,16 @@ target-tracking-demonstrator/
 │       ├── display_gui/
 │       ├── input_commands/
 │       └── gateway_client/
-└── firmware/
-    ├── arduino/
-    ├── src/
-    └── include/
+├── firmware/
+│   ├── arduino/
+│   ├── src/
+│   └── include/
+└── aimbot_prototype/
+    ├── aimbot/        # tracker, perception, control, gimbal drivers, GUI, simulator
+    ├── config/        # settings for each setup
+    ├── models/        # trained YOLO26 detector
+    ├── tests/
+    └── tools/         # training, label audit, run analysis
 ```
 
 Placeholder files are omitted from the tree for readability.
