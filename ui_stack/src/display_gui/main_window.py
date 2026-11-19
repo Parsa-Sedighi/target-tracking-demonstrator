@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (QApplication, QComboBox, QFileDialog, QGroupBox,
                                QSizePolicy, QVBoxLayout, QWidget)
 
 from demo_detector import DemoDetector
+from joystick_widget import JoystickWidget
 from video_canvas import HUDOverlayRenderer  # Parsa's box/crosshair drawing
 
 DEMO_SIZE = (960, 540)          # width, height of the demo background
@@ -124,11 +125,37 @@ class MainWindow(QMainWindow):
         det_group = QGroupBox("Detections")
         QVBoxLayout(det_group).addWidget(self.det_label)
 
+        self.manual_button = QPushButton("Manual")
+        self.auto_button = QPushButton("Auto-track")
+        self.manual_button.setCheckable(True)
+        self.auto_button.setCheckable(True)
+        self.manual_button.setChecked(True)
+        self.manual_button.clicked.connect(lambda: self._set_gimbal_mode(True))
+        self.auto_button.clicked.connect(lambda: self._set_gimbal_mode(False))
+        mode_row = QHBoxLayout()
+        mode_row.addWidget(self.manual_button)
+        mode_row.addWidget(self.auto_button)
+
+        self.joystick = JoystickWidget()
+        self.joystick.moved.connect(self._on_joystick_moved)
+        self.gimbal_label = QLabel("Pan: +0.00   Tilt: +0.00")
+        self.gimbal_label.setStyleSheet("font-family: Menlo, Consolas, monospace;")
+        self.center_button = QPushButton("Center gimbal")
+        self.center_button.clicked.connect(self._on_center_gimbal)
+
+        gimbal_group = QGroupBox("Gimbal control")
+        gimbal_layout = QVBoxLayout(gimbal_group)
+        gimbal_layout.addLayout(mode_row)
+        gimbal_layout.addWidget(self.joystick, 0, Qt.AlignHCenter)
+        gimbal_layout.addWidget(self.gimbal_label)
+        gimbal_layout.addWidget(self.center_button)
+        
         panel = QVBoxLayout()
         panel.addWidget(source_group)
         panel.addWidget(self.state_label)
         panel.addLayout(buttons)
         panel.addWidget(target_group)
+        panel.addWidget(gimbal_group)
         panel.addWidget(det_group, 1)
         self.fps_label = QLabel("FPS: --")
         self.fps_label.setStyleSheet("font-family: Menlo, Consolas, monospace;")
@@ -356,6 +383,23 @@ class MainWindow(QMainWindow):
     def _refresh_buttons(self):
         self.start_button.setEnabled(self.selected is not None and not self.tracking)
         self.stop_button.setEnabled(self.tracking)
+
+    def _set_gimbal_mode(self, manual):
+        self.manual_button.setChecked(manual)
+        self.auto_button.setChecked(not manual)
+        self.joystick.setEnabled(manual)
+        self.center_button.setEnabled(manual)
+        if not manual:
+            self.joystick.reset()
+        self.statusBar().showMessage(
+            "Gimbal: manual control." if manual else "Gimbal: auto-track (joystick disabled).")
+
+    def _on_joystick_moved(self, pan, tilt):
+        self.gimbal_label.setText(f"Pan: {pan:+.2f}   Tilt: {tilt:+.2f}")
+
+    def _on_center_gimbal(self):
+        self.joystick.reset()
+        self.statusBar().showMessage("Gimbal centered.")
 
     # ---------- user actions ----------
     def _on_video_clicked(self, fx, fy):
