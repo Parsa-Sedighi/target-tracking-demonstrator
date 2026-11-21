@@ -1,8 +1,8 @@
 # tests/test_state_machine.py
 import pytest
-import rclpy
+rclpy = pytest.importorskip("rclpy", reason="requires a sourced ROS 2 installation")
 from std_msgs.msg import String
-from aimbot_core.state_machine_node import SystemStateMachine, AimBotState
+from state_machine_node import SystemStateMachine, AimBotState
 
 @pytest.fixture(scope="module")
 def ros_context():

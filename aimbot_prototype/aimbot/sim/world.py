@@ -207,6 +207,10 @@ def build_scenario(name: str, card_text: str = "AIM 23"):
         cv2.drawMarker(board, (180, 180), (0, 0, 255, 255), cv2.MARKER_CROSS, 30, 2)
         tg = [SimTarget(7, "card", 0.3048, lambda t: np.array([10 * FT, 0.0, 0.0]),
                         board, label="PRELIMINARY MOCK board", planar=True)]
+    elif name == "target_loss":  # PROJECT23-13 / UC-09: remove the target for three seconds
+        def path(t):
+            return None if 5.0 <= t % 12.0 < 8.0 else np.array([10 * FT, 0.4 * math.sin(0.7 * t), 0.0])
+        tg = [SimTarget(9, "drone", 0.30, path, drone, 0.62, "UC-09 mock target")]
     elif name == "crossing":         # ES-01.4: two targets cross, keep the selected one
         tg = [SimTarget(1, "drone", 0.30, _hand_path(8 * FT, 0.0, 1.0, 1.0, 1.0), drone, 0.62, "T1 drone"),
               SimTarget(4, "hand", 0.20, _hand_path(6 * FT, 0.0, 1.0, -1.0, 1.0), hand, 1.0, "hand")]
@@ -222,7 +226,7 @@ def build_scenario(name: str, card_text: str = "AIM 23"):
     return tg, occ
 
 
-SCENARIOS = ["mixed", "drone_lateral", "ball_drop", "card_walk", "crossing", "occlusion", "calibration_board"]
+SCENARIOS = ["mixed", "drone_lateral", "ball_drop", "card_walk", "crossing", "occlusion", "calibration_board", "target_loss"]
 
 
 # --------------------------------------------------------------------------- world
@@ -452,6 +456,10 @@ class SimWorld:
                           "pos": (float(p[0]), float(p[1]), float(p[2])), "label": tg.label})
         if self.scenario == "calibration_board":
             cv2.putText(img, "PRELIMINARY MOCK - hardware untested", (16, 30),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 210, 255), 2, cv2.LINE_AA)
+        elif self.scenario == "target_loss":
+            label = "TARGET REMOVED" if 5.0 <= ts % 12.0 < 8.0 else "TARGET VISIBLE"
+            cv2.putText(img, "UC-09 PRELIMINARY MOCK - " + label, (16, H - 20),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 210, 255), 2, cv2.LINE_AA)
         return img, truth
 

@@ -95,5 +95,6 @@ class StateMachine:
         return None
 
     def snapshot(self) -> dict:
-        return {"state": self.state, "since": self.since, "reason": self.reason,
-                "reacquire_remaining_s": self.reacquire_remaining(), "transitions": self.transitions}
+        with self._lock:
+            return {"state": self.state, "since": self.since, "reason": self.reason,
+                    "reacquire_remaining_s": self.reacquire_remaining(), "transitions": self.transitions}

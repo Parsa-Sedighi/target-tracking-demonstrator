@@ -1,5 +1,6 @@
 .venv/
 /aimbot_prototype/calibration_mock.json
+/aimbot_prototype/search_mock_calibration.json
 
 # Datasets and archives (too large for git)
 uav_dataset/
