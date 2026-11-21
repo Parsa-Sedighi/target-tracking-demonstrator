@@ -1,0 +1,26 @@
+# PROJECT23-13 / UC-09: preliminary mock only, no physical devices or ROS installation.
+extends: default.yaml
+sim:
+  scenario: target_loss
+sensors:
+  vis:
+    backend: sim
+camera:
+  active: vis
+gimbal:
+  backend: sim
+lidar:
+  backend: sim
+detector:
+  backend: sim_truth
+  noise_px: 0.0
+  miss_prob: 0.0
+  false_positive_prob: 0.0
+seek:
+  target_class: drone
+micro:
+  confirm_timeout_s: 0.25
+logging:
+  auto_record: false
+calibration:
+  file: search_mock_calibration.json

@@ -69,3 +69,64 @@ encoder home/reset semantics, and board dimensions/reference marks before hardwa
 acceptance. Use an independently surveyed board-face distance, observe the LiDAR spot,
 and verify fresh readings after calibration. A fitted offset alone cannot establish
 that the beam hit the intended board.
+
+## UC-09 search mode — PROJECT23-13
+
+**Preliminary mock tests only. Physical hardware, a ROS 2 executor, DDS delivery,
+and Jetson timing remain untested.** The tests reuse the existing engine, simulator,
+tracker, state machine and ROS publisher code. The ROS API is replaced with message
+spies; no trained model or hardware connection is used.
+
+From this folder, using the same prototype virtual environment:
+
+```powershell
+python -m pytest tests/test_search_mode.py -q -o junit_family=legacy --junitxml=uc09.xml
+python -m aimbot -c search_mock
+```
+
+For the interactive mock, press **Start tracking**. The drone is removed during
+seconds 5–8 of each 12-second cycle, then returns. Watch the state switch from
+TRACKING to SEARCHING while the gimbal holds position. The screen identifies the
+scene as a preliminary mock. The detector's confirmation timeout is 0.25 seconds
+in this config; the default application config retains its existing timeout.
+
+The automated cases remove the rendered target, move it outside the image, or
+occlude it with the simulator's pillar. They verify both angle and rate control:
+
+- Loss detection leads to a SEARCHING message and a hold command, followed by
+  continuing state heartbeats and a stationary simulated gimbal.
+- State changes publish synchronously, without waiting for the heartbeat timer.
+  The ROS bridge's heartbeat throttle must not suppress a changed state.
+- A control command calculated before target loss cannot resume tracking motion
+  after the hold. An old heartbeat cannot restore a stale TRACKING state.
+- Target return allows reacquisition; a search timeout keeps holding, and E-stop
+  remains latched when the target returns.
+
+The default `search.coast_s` is now **0**, meaning hold on target loss. A positive
+value explicitly enables the existing predictive coasting option. Simulator checks
+allow 750 ms to detect removal (including confirmation, frame timing and host
+scheduling), 50 ms from the loss transition to publication/hold, and less than
+0.2 degrees drift after settling. These are mock regression budgets, not measured
+hardware acceptance limits. Separate deterministic checks prove publication occurs
+inside the transition callback even when the clock has not advanced.
+
+The wire value for “Search Mode” is **`SEARCHING`**, preserving existing consumers.
+The standalone ROS node publishes a plain `std_msgs/String` on `/aimbot/state`;
+the prototype bridge publishes its existing JSON state payload on that topic.
+They are alternative entry points: run the publisher used by your stack, rather
+than starting both on the same topic. Both publication paths are covered by mocks.
+The standalone node's real ROS tests skip when `rclpy` is unavailable.
+
+Run the bench check with a real ROS subscriber, then physically obscure/remove a
+tracked target and measure publication latency, motion settling, reacquisition and
+E-stop behavior on the installed gimbal. Mock API calls do not establish DDS or
+physical motion performance.
+
+The recorded November 20, 2026 run passed **21/21 UC-09 checks**. The combined
+prototype, ROS-node and travel-limit suite had **154 passes, 9 skips, and no
+failures**. Skips cover unavailable ROS 2 and optional training dependencies.
+Across the six rendered target-loss cases, detection took 131–250 ms; the mock
+publisher received SEARCHING within 0.040 ms of the loss transition, and settled
+gimbal drift stayed below 0.012 degrees. These are in-process simulator measurements,
+not ROS transport or physical gimbal performance. See [the recorded result](uc09_preliminary_result.json)
+for individual cases and untested integration limits.

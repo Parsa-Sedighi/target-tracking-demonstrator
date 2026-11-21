@@ -77,6 +77,8 @@ class Engine:
     def __init__(self, cfg: ConfigNode):
         self.cfg = cfg
         self.bus = Bus()
+        self._state_publish_lock = threading.RLock()
+        self._motion_lock = threading.RLock()
         self.sm = StateMachine(float(cfg.get_path("search.reacquire_window_s", 5.0)))
         self.sm.listeners.append(self._on_state_change)
         self.framebuf = FrameBuffer(int(cfg.get_path("vision.history_frames", 24)))
@@ -917,7 +919,7 @@ class Engine:
         hz = float(self.cfg.get_path("control.rate_hz", 100.0))
         self.loop = loop = clock.RateLoop(hz, self._stop)
         timeout = float(self.cfg.get_path("safety.gimbal_timeout_s", 0.5))
-        coast = float(self.cfg.get_path("search.coast_s", 0.4))
+        coast = float(self.cfg.get_path("search.coast_s", 0.0))
         coast_max = float(self.cfg.get_path("search.coast_max_deg", 6.0))
         while not self._stop.is_set():
             t = loop.wait()
@@ -935,16 +937,16 @@ class Engine:
                         ec = self._ext_cmd
                         if ec is not None and t - ec[2] < 0.2:
                             cmd = GimbalCommand("rate", ec[0], ec[1])
-                            self.gimbal.command(cmd)
+                            cmd = self._command_for_state(cmd, TRACKING)
                         else:
-                            self._hold(t)
+                            self._hold(t, TRACKING)
                     else:
                         with self.kf_lock:
                             cmd = self.controller.compute(t, self.kf.predict_to, g, self._aim_offset())
                         if cmd is not None:
-                            self.gimbal.command(cmd)
+                            cmd = self._command_for_state(cmd, TRACKING)
                         else:
-                            self._hold(t)
+                            self._hold(t, TRACKING)
                 elif st == SEARCHING:
                     lost_at = self.sm.lost_at
                     cmd = None
@@ -959,16 +961,16 @@ class Engine:
                             with self.kf_lock:
                                 cmd = self.controller.compute(t, self.kf.predict_to, g, self._aim_offset())
                     if cmd is not None:
-                        self.gimbal.command(cmd)
+                        cmd = self._command_for_state(cmd, SEARCHING)
                     else:
-                        self._hold(t)
+                        self._hold(t, SEARCHING)
                 elif st == LOST:
                     if self.cfg.get_path("search.on_lost", "hold") == "home" and not self._homed_after_lost:
                         self.gimbal.home()
                         self._homed_after_lost = True
                         cmd = GimbalCommand("angle", 0.0, 0.0)
                     elif not self._homed_after_lost:
-                        self._hold(t)
+                        self._hold(t, LOST)
                 elif st in (IDLE, PAUSED):
                     cmd = self._apply_jog(t, g)
                 # frame -> command latency (age of the newest measurement used)
@@ -983,10 +985,30 @@ class Engine:
                 log.exception("control loop error")
             self.control_rate.tick()
 
-    def _hold(self, t: float) -> None:
-        if t - self._hold_sent_t > 0.5:
-            self.gimbal.hold()
-            self._hold_sent_t = t
+    def _command_for_state(self, cmd: GimbalCommand, expected: str) -> Optional[GimbalCommand]:
+        # A vision-thread loss can occur while the controller computes a command.
+        # Never send that stale tracking command after the transition's hold command.
+        with self._motion_lock:
+            if self.sm.state != expected:
+                return None
+            self.gimbal.command(cmd)
+            return cmd
+
+    def _hold(self, t: float, expected: str) -> None:
+        with self._motion_lock:
+            if self.sm.state == expected and t - self._hold_sent_t > 0.5:
+                self.gimbal.hold()
+                self._hold_sent_t = t
+                self.bus.publish(Topics.GIMBAL_CMD, self.gimbal.last_cmd)
+
+    def _publish_state(self) -> None:
+        # Serialise heartbeat and transition publication. Read the state here, not
+        # the control loop's earlier snapshot, which may predate a target loss.
+        with self._state_publish_lock:
+            state = self.sm.snapshot()
+            self.bus.publish(Topics.STATE, {"t": clock.now(), "state": state["state"],
+                                            "reason": state["reason"],
+                                            "reacquire_remaining_s": state["reacquire_remaining_s"]})
 
     def _apply_jog(self, t: float, g) -> Optional[GimbalCommand]:
         jp, jt, jts = self._jog
@@ -1051,8 +1073,7 @@ class Engine:
         self.telemetry = row
         if st == TRACKING and meas is not None:
             self.stats["max_err_deg"] = max(self.stats["max_err_deg"], D(math.hypot(meas.err_az, meas.err_el)))
-        self.bus.publish(Topics.STATE, {"t": t, "state": st, "reason": self.sm.reason,
-                                        "reacquire_remaining_s": self.sm.reacquire_remaining()})
+        self._publish_state()
         self.bus.publish(Topics.GIMBAL_STATE, g)
         if cmd is not None:
             self.bus.publish(Topics.GIMBAL_CMD, cmd)
@@ -1068,7 +1089,8 @@ class Engine:
         self._event("state", f"{old} -> {new}: {reason}")
         self.bus.publish(Topics.EVENTS, {"type": "state", "old": old, "new": new, "reason": reason, "t": t})
         if new == ESTOP:
-            self.gimbal.estop()
+            with self._motion_lock:
+                self.gimbal.estop()
             self._pending_clear = True
         if old == ESTOP and new == IDLE:
             self.gimbal.reset_estop()
@@ -1077,7 +1099,9 @@ class Engine:
             self._homed_after_lost = False
         if new == SEARCHING:
             self._entered_search_t = t
-            self._hold_sent_t = 0.0
+            self._hold_sent_t = -math.inf
+            if old != TRACKING or float(self.cfg.get_path("search.coast_s", 0.0)) <= 0:
+                self._hold(t, SEARCHING)
         if new == IDLE:
             self._pending_clear = True
             self._jog_sp = None
@@ -1087,6 +1111,7 @@ class Engine:
         if old == IDLE and new == SEARCHING and self.cfg.get_path("logging.auto_record", True) and not self.logger.active:
             self._start_logging("track")
         self.logger.log_event("state", {"old": old, "new": new, "reason": reason})
+        self._publish_state()
 
     def _start_logging(self, label: str) -> None:
         meta = {"version": __version__, "platform": platform.platform(), "python": platform.python_version(),

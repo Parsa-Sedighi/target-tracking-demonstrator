@@ -1,0 +1,134 @@
+{
+  "issue": "PROJECT23-13",
+  "use_case": "UC-09",
+  "status": "PRELIMINARY MOCK - ROS DDS and physical hardware untested",
+  "run_timestamp": "2026-11-20T19:52:46.729763-08:00",
+  "branch": "jayden/007-PROJECT23-13-search-mode",
+  "base_commit": "d8e7c06afaf3fbab4a6c0cf220d5bd2f7edc1c52",
+  "environment": {
+    "platform": "Windows-10-10.0.26200-SP0",
+    "python": "3.11.0",
+    "qt_platform": "offscreen"
+  },
+  "uc09_tests": {
+    "passed": 21,
+    "failed": 0
+  },
+  "regression_suite": {
+    "passed": 154,
+    "failed": 0,
+    "skipped": 9,
+    "includes": [
+      "prototype suite including UC-07",
+      "UC-09",
+      "ROS state-node integration tests",
+      "travel-limit tests"
+    ],
+    "skipped_tests": [
+      {
+        "test": "::",
+        "reason": "collection skipped"
+      },
+      {
+        "test": "tests.test_tools::test_find_unfinished_training_run",
+        "reason": "could not import 'torch': No module named 'torch'"
+      },
+      {
+        "test": "tests.test_tools::test_stalled_run_ends_its_loader_processes_with_exit_code_75",
+        "reason": "could not import 'psutil': No module named 'psutil'"
+      },
+      {
+        "test": "tests.test_tools::test_trainer_gives_validation_its_own_loader_count",
+        "reason": "could not import 'ultralytics': No module named 'ultralytics'"
+      },
+      {
+        "test": "tests.test_training::test_split_7z_volumes",
+        "reason": "could not import 'py7zr': No module named 'py7zr'"
+      },
+      {
+        "test": "tests.test_training::test_coco_fallback_maps_proxies_to_drone",
+        "reason": "could not import 'ultralytics': No module named 'ultralytics'"
+      },
+      {
+        "test": "tests.test_training::test_trained_model_keeps_bird_and_adds_coco_ball",
+        "reason": "could not import 'ultralytics': No module named 'ultralytics'"
+      },
+      {
+        "test": "tests.test_training::test_broken_model_file_falls_back",
+        "reason": "could not import 'ultralytics': No module named 'ultralytics'"
+      },
+      {
+        "test": "tests.test_training::test_camera_aug_installs_into_ultralytics_training_only",
+        "reason": "could not import 'ultralytics': No module named 'ultralytics'"
+      }
+    ]
+  },
+  "measurements": [
+    {
+      "status": "PRELIMINARY MOCK - ROS DDS and hardware untested",
+      "failure": "removed",
+      "mode": "angle",
+      "loss_detection_ms": 247.4134000003687,
+      "search_publish_ms": 0.03460000152699649,
+      "hold_command_ms": 0.019400002202019095,
+      "settled_drift_deg": 0.00249532816769135,
+      "state_messages": 55
+    },
+    {
+      "status": "PRELIMINARY MOCK - ROS DDS and hardware untested",
+      "failure": "outside_frame",
+      "mode": "angle",
+      "loss_detection_ms": 249.37299999874085,
+      "search_publish_ms": 0.031600000511389226,
+      "hold_command_ms": 0.01700000575510785,
+      "settled_drift_deg": 0.01085236021480272,
+      "state_messages": 56
+    },
+    {
+      "status": "PRELIMINARY MOCK - ROS DDS and hardware untested",
+      "failure": "occluded",
+      "mode": "angle",
+      "loss_detection_ms": 131.82529999903636,
+      "search_publish_ms": 0.039699996705166996,
+      "hold_command_ms": 0.021400002879090607,
+      "settled_drift_deg": 0.0074843775489009815,
+      "state_messages": 55
+    },
+    {
+      "status": "PRELIMINARY MOCK - ROS DDS and hardware untested",
+      "failure": "removed",
+      "mode": "rate",
+      "loss_detection_ms": 246.3865999961854,
+      "search_publish_ms": 0.02970000059576705,
+      "hold_command_ms": 0.015099998563528061,
+      "settled_drift_deg": 0.00477080633379187,
+      "state_messages": 56
+    },
+    {
+      "status": "PRELIMINARY MOCK - ROS DDS and hardware untested",
+      "failure": "outside_frame",
+      "mode": "rate",
+      "loss_detection_ms": 247.42219999461668,
+      "search_publish_ms": 0.030399998649954796,
+      "hold_command_ms": 0.015500001609325409,
+      "settled_drift_deg": 0.011998775499524472,
+      "state_messages": 55
+    },
+    {
+      "status": "PRELIMINARY MOCK - ROS DDS and hardware untested",
+      "failure": "occluded",
+      "mode": "rate",
+      "loss_detection_ms": 131.45880000229226,
+      "search_publish_ms": 0.03029999788850546,
+      "hold_command_ms": 0.015499994333367795,
+      "settled_drift_deg": 0.010121113217246907,
+      "state_messages": 55
+    }
+  ],
+  "limits": [
+    "ROS publishers and messages use test spies; no executor, DDS delivery or ROS network latency measured.",
+    "Loss-to-publication timing starts at the software loss transition; detection delay is reported separately.",
+    "Simulator camera, truth detector, pixel tracker, gimbal and in-process bus; no trained model validation.",
+    "Physical camera occlusion, gimbal stop distance, Jetson timing and real ROS transport remain untested."
+  ]
+}

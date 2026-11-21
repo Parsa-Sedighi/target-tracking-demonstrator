@@ -5,7 +5,7 @@ Ubuntu 22.04 -> ROS 2 Humble): ``source /opt/ros/humble/setup.bash`` first.
 Without rclpy the engine runs normally and this module is skipped.
 
 Published (all stamps = frame capture / measurement time, mapped to ROS time)
-  /aimbot/state                  std_msgs/String (JSON)          100 Hz heartbeat
+  /aimbot/state                  std_msgs/String (JSON)          immediate transitions + 100 Hz heartbeat
   /aimbot/target/offset          geometry_msgs/Vector3Stamped    x=err_az, y=err_el [rad], z=match score
   /aimbot/target/offset_norm     geometry_msgs/Vector3Stamped    x=dx, y=dy  (FR-08, [-1,1], +right/+up)
   /aimbot/target/estimate        geometry_msgs/Vector3Stamped    x=az, y=el [rad], z=range [m] (NaN if none)
@@ -84,6 +84,8 @@ class Ros2Bridge:
         self._stop = threading.Event()
         self._unsubs = []
         self._last_state_pub = 0.0
+        self._last_state = None
+        self._state_lock = threading.Lock()
         self.state_period = 1.0 / float(cfg.get("state_hz", 100))
 
     # ------------------------------------------------------------------ helpers
@@ -109,10 +111,12 @@ class Ros2Bridge:
     def _on_bus(self, topic: str, msg) -> None:
         try:
             if topic == Topics.STATE:
-                t = clock.now()
-                if t - self._last_state_pub >= self.state_period * 0.95:
-                    self._last_state_pub = t
-                    self.p_state.publish(self._string(msg))
+                with self._state_lock:
+                    t = clock.now()
+                    state = msg.get("state")
+                    if state != self._last_state or t - self._last_state_pub >= self.state_period * 0.95:
+                        self.p_state.publish(self._string(msg))
+                        self._last_state_pub, self._last_state = t, state
             elif topic == Topics.TARGET_OFFSET:
                 self.p_off.publish(self._v3(msg["t_capture"], msg["err_az_rad"], msg["err_el_rad"], msg.get("score", 0.0)))
                 self.p_offn.publish(self._v3(msg["t_capture"], msg["dx"], msg["dy"], 0.0))

@@ -128,7 +128,7 @@ control:
 
 search:
   reacquire_window_s: 5.0    # ES-03.1 hold and search for 5 s
-  coast_s: 0.4               # keep following the prediction this long after a loss, then hold
+  coast_s: 0.0               # UC-09: hold immediately on loss; positive values opt into predictive coasting
   coast_max_deg: 6.0         # ...but never further than this from where the target was last seen
   near_gate_s: 1.5           # during re-acquisition prefer detections near the predicted position
   on_lost: hold              # hold | home   (after the window expires: ES-03.2 = hold + alert)
